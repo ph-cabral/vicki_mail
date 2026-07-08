@@ -1,0 +1,256 @@
+"""
+Nodos del grafo. Cada función recibe el EmailState y devuelve un dict con
+las claves que actualiza (estilo LangGraph). El estado ya llega con el
+mensaje + adjuntos descargados (ver main.py: gmail_client.get_message con
+download_attachments=True).
+"""
+import hashlib
+import logging
+
+from app import drive_client, gmail_client
+from app.config import config
+from app.constants import (
+    DRIVE_FOLDER_FIREFLIES_DONE,
+    DRIVE_FOLDER_FIREFLIES_SRC,
+    DRIVE_FOLDER_READAI_DONE,
+    DRIVE_FOLDER_READAI_SRC,
+    LABEL_CV_PROCESADO,
+    LABEL_QUEUE,
+    SENDER_FIREFLIES,
+    SENDER_MEDICINA_LABORAL,
+    SENDER_READAI,
+    SENDER_TRANSKRIPTOR,
+)
+from app.db import construir_texto_limpio, insert_documento_meeting, upsert_candidato, upsert_documento_cv
+from app.email_templates import (
+    foto_no_procesada,
+    postulacion_recibida,
+    recordatorio_uso_interno,
+    solo_recepcion_cv,
+    ya_registrado,
+)
+from app.extract import calcular_hash, es_imagen_o_escaneo, extraer_texto, filtrar_adjunto_cv
+from app.graph_state import EmailState
+from app.llm import analizar_cv
+from app.qdrant_store import upsert_documento
+
+log = logging.getLogger("nodes")
+
+
+def _cerrar(state: EmailState, aplicar_label_procesado: bool = True) -> None:
+    """Deja el mensaje fuera de la 'cola' (remueve LABEL_QUEUE + INBOX),
+    opcionalmente marca 'cv procesado', y lo marca como leído. Equivalente a
+    los nodos 'Remove label from message' + 'Agregar Etiqueta cv procesado' +
+    'Marcar Como Leido' del workflow n8n."""
+    message_id = state.get("message_id")
+    if not message_id:
+        return
+    try:
+        if aplicar_label_procesado:
+            gmail_client.add_labels(message_id, [LABEL_CV_PROCESADO])
+        gmail_client.remove_labels(message_id, [LABEL_QUEUE, "INBOX"])
+        gmail_client.mark_as_read(message_id)
+    except Exception:
+        log.exception("no se pudo finalizar/etiquetar el mensaje %s", message_id)
+
+
+def _nombre_destinatario(state: EmailState) -> str:
+    candidato = state.get("candidato") or {}
+    nombre = " ".join(x for x in [candidato.get("nombre"), candidato.get("apellido")] if x).strip()
+    return nombre or state.get("from_name") or ""
+
+
+# ── router ───────────────────────────────────────────────────────────────
+
+def router_email(state: EmailState) -> dict:
+    from_addr = (state.get("from_address") or "").lower()
+    reply_to = (state.get("reply_to_address") or "").lower()
+    label_ids = state.get("label_ids") or []
+
+    candidatos_addr = [a for a in [reply_to, from_addr] if a]
+    es_interno = (
+        any(a.endswith(f"@{config.INTERNAL_DOMAIN}") for a in candidatos_addr)
+        and config.RRHH_EMAIL.lower() not in candidatos_addr
+    )
+    if es_interno:
+        return {"route": "interno"}
+
+    if "SENT" in label_ids:
+        return {"route": "ignorar"}
+
+    if from_addr == SENDER_READAI:
+        return {"route": "readai"}
+    if from_addr == SENDER_FIREFLIES:
+        return {"route": "fireflies"}
+    if from_addr in (SENDER_TRANSKRIPTOR, SENDER_MEDICINA_LABORAL):
+        log.info("remitente %s fuera del alcance implementado por ahora, se ignora", from_addr)
+        return {"route": "ignorar"}
+
+    return {"route": "candidato"}
+
+
+# ── rama candidato: adjuntos → texto → LLM → match → persistencia ──────────
+
+def check_attachments(state: EmailState) -> dict:
+    cv = filtrar_adjunto_cv(state.get("attachments", []) or [])
+    if cv is None:
+        return {"route": "sin_cv"}
+    return {"route": "con_cv", "cv_adjunto": cv}
+
+
+def extract_text_node(state: EmailState) -> dict:
+    cv = state["cv_adjunto"]
+    data = cv["data"]
+    hash_archivo = calcular_hash(data)
+    texto = extraer_texto(cv["mime_type"], data)
+    if es_imagen_o_escaneo(texto):
+        return {"route": "imagen", "hash_archivo": hash_archivo}
+    return {"route": "texto_ok", "texto_cv": texto, "hash_archivo": hash_archivo}
+
+
+def analyze_cv_node(state: EmailState) -> dict:
+    perfil = analizar_cv(state["texto_cv"])
+    if perfil.get("error"):
+        return {"route": "error_llm", "perfil": perfil}
+    texto_limpio = construir_texto_limpio(perfil)
+    return {"route": "ok", "perfil": perfil, "texto_limpio": texto_limpio}
+
+
+def match_candidato_node(state: EmailState) -> dict:
+    candidato = upsert_candidato(state["perfil"])
+    route = "nuevo" if candidato["accion"] == "inserted" else "existente"
+    return {"candidato": candidato, "route": route}
+
+
+def persist_cv_node(state: EmailState) -> dict:
+    """Escribe/actualiza el CV en Postgres (rag_system.documento_aprobado) y
+    en Qdrant (colección 'cvs'), tanto si el candidato es nuevo como si ya
+    estaba registrado — según lo pedido: siempre se reemplazan los datos."""
+    cv = state["cv_adjunto"]
+    candidato = state["candidato"]
+    try:
+        upsert_documento_cv(
+            hash_archivo=state["hash_archivo"],
+            nombre_archivo=cv["filename"],
+            texto_limpio=state["texto_limpio"],
+            perfil=state["perfil"],
+            candidato_id=candidato["id"],
+            mime_type=cv["mime_type"],
+            tamanio_bytes=cv["size"],
+            texto_raw=state["texto_cv"],
+            email_id=state.get("message_id", ""),
+            accion=candidato["accion"],
+        )
+        upsert_documento(
+            collection=config.QDRANT_COLLECTION_CVS,
+            texto=state["texto_limpio"],
+            hash_archivo=state["hash_archivo"],
+            metadata={
+                "candidato_id": candidato["id"],
+                "nombre": candidato.get("nombre"),
+                "apellido": candidato.get("apellido"),
+                "email": candidato.get("email"),
+                "fuente": "email",
+            },
+        )
+    except Exception:
+        log.exception("error persistiendo CV (candidato_id=%s)", candidato.get("id"))
+    return {}
+
+
+# ── respuestas + cierre ─────────────────────────────────────────────────────
+
+def reply_nuevo_node(state: EmailState) -> dict:
+    subject, html = postulacion_recibida(_nombre_destinatario(state))
+    gmail_client.send_email(state["from_address"], subject, html)
+    _cerrar(state)
+    return {"accion_final": "cv_nuevo"}
+
+
+def reply_existente_node(state: EmailState) -> dict:
+    subject, html = ya_registrado(_nombre_destinatario(state))
+    gmail_client.send_email(state["from_address"], subject, html)
+    _cerrar(state)
+    return {"accion_final": "cv_existente"}
+
+
+def reply_imagen_node(state: EmailState) -> dict:
+    subject, html = foto_no_procesada(state.get("from_name") or "")
+    gmail_client.send_email(state["from_address"], subject, html)
+    _cerrar(state)
+    return {"accion_final": "imagen_rechazada"}
+
+
+def reply_sin_cv_node(state: EmailState) -> dict:
+    subject, html = solo_recepcion_cv(state.get("from_name") or "")
+    gmail_client.send_email(state["from_address"], subject, html)
+    _cerrar(state)
+    return {"accion_final": "sin_cv"}
+
+
+def delete_and_notice_node(state: EmailState) -> dict:
+    """Remitente interno (@everwear.com.ar, no rrhh): se responde con el
+    recordatorio y se BORRA el mensaje (irreversible, gmail delete real —
+    mismo comportamiento que el nodo 'Delete a message' de n8n)."""
+    subject, html = recordatorio_uso_interno()
+    gmail_client.send_email(state["from_address"], subject, html)
+    gmail_client.delete_message(state["message_id"])
+    return {"accion_final": "interno_eliminado"}
+
+
+def ignore_node(state: EmailState) -> dict:
+    """Respuestas propias (label SENT) o remitentes fuera de alcance: se
+    archiva sin responder."""
+    _cerrar(state, aplicar_label_procesado=False)
+    return {"accion_final": "ignorado"}
+
+
+def error_node(state: EmailState) -> dict:
+    """El LLM no devolvió un JSON parseable. Se deja el mensaje SIN marcar
+    como procesado (sigue en la cola) para poder revisarlo/reintentar."""
+    log.error("fallo de análisis LLM en mensaje %s: %s", state.get("message_id"), state.get("perfil"))
+    return {"accion_final": "error_llm"}
+
+
+# ── rama notas de reunión (Fireflies / Read AI) ─────────────────────────────
+
+def meeting_notes_node(state: EmailState) -> dict:
+    origen = "Read AI" if state.get("route") == "readai" else "Fireflies"
+    src_folder = DRIVE_FOLDER_READAI_SRC if origen == "Read AI" else DRIVE_FOLDER_FIREFLIES_SRC
+    dest_folder = DRIVE_FOLDER_READAI_DONE if origen == "Read AI" else DRIVE_FOLDER_FIREFLIES_DONE
+
+    try:
+        archivos = drive_client.list_folder(src_folder)
+    except Exception:
+        log.exception("no se pudo listar carpeta Drive de %s", origen)
+        archivos = []
+
+    for f in archivos:
+        try:
+            data = drive_client.export_as_docx(f["id"])
+            texto = extraer_texto(drive_client.DOCX_MIME, data)
+            hash_logico = hashlib.sha256(texto.encode("utf-8")).hexdigest()
+            insert_documento_meeting(
+                hash_archivo=hash_logico,
+                nombre_archivo=f.get("name", "sin_nombre.docx"),
+                texto_limpio=texto,
+                mime_type=drive_client.DOCX_MIME,
+                tamanio_bytes=len(data),
+                texto_raw=texto,
+                origen=origen,
+            )
+            upsert_documento(
+                collection=config.QDRANT_COLLECTION_DOCS,
+                texto=texto,
+                hash_archivo=hash_logico,
+                metadata={"origen": origen, "nombre_archivo": f.get("name")},
+            )
+            drive_client.move_file(f["id"], dest_folder)
+        except Exception:
+            log.exception("error procesando archivo %s de %s", f.get("id"), origen)
+
+    # el mail de notificación (de read.ai / fireflies) se archiva igual que
+    # el resto — no se pudo confirmar en el JSON si el original lo borraba
+    # en vez de archivarlo, ver README.
+    _cerrar(state, aplicar_label_procesado=False)
+    return {"accion_final": f"meeting_notes_{origen.lower().replace(' ', '')}"}

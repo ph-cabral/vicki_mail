@@ -1,0 +1,12 @@
+services:
+  vicki-mail:
+    networks: [ai-net]
+    build: .
+    container_name: vicki-mail
+    restart: unless-stopped
+    env_file: .env
+    ports:
+      - "8089:8000"
+networks:
+  ai-net:
+    external: true
