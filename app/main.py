@@ -66,7 +66,7 @@ async def lifespan(_app: FastAPI):
         scheduler.shutdown(wait=False)
 
 
-app = FastAPI(title="vicki_mail", description="Ingesta de CVs por email + notas de reunión", lifespan=lifespan)
+app = FastAPI(title="vicki_mail", description="Ingesta de CVs por email + notas de reunion", lifespan=lifespan)
 
 
 @app.get("/health")
@@ -76,13 +76,13 @@ def health():
 
 @app.get("/labels")
 def labels():
-    """Lista todos los labels del buzón con su ID real — para verificar que
+    """Lista todos los labels del buzon con su ID real -- para verificar que
     LABEL_QUEUE / LABEL_CV_PROCESADO en .env apuntan a lo correcto."""
     return {
         "labels": gmail_client.list_labels(),
         "configurados": {
             "LABEL_QUEUE": LABEL_QUEUE,
-            "LABEL_CV_PROCESADO": __import__("app.constants", fromlist=["LABEL_CV_PROCESADO"]).LABEL_CV_PROCESADO,
+            "LABEL_CV_PROCESADO": LABEL_CV_PROCESADO,
         },
     }
 

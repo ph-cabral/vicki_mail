@@ -159,7 +159,7 @@ def remove_labels(message_id: str, label_ids: list[str]) -> None:
 
 
 def delete_message(message_id: str) -> None:
-    _service().users().messages().delete(userId="me", id=message_id).execute()
+    _service().users().messages().trash(userId="me", id=message_id).execute()
 
 
 def send_email(
