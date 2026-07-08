@@ -149,8 +149,8 @@ WITH upserted AS (
     jsonb_build_object(
       'procesamiento_automatico', true,
       'workflow', 'vicki_mail',
-      'email_id', %(email_id)s,
-      'accion_candidato', %(accion)s,
+      'email_id', %(email_id)s::text,
+      'accion_candidato', %(accion)s::text,
       'fecha_procesamiento', NOW()::text
     ),
     false, false, %(system_user)s, NOW(),
@@ -206,7 +206,7 @@ VALUES (
   %(hash_archivo)s, %(nombre_archivo)s, %(texto_limpio)s, '{}'::jsonb,
   NULL,
   jsonb_build_object(
-    'origen', %(origen)s,
+    'origen', %(origen)s::text,
     'plataforma', 'google_drive',
     'google_file', true,
     'procesamiento_automatico', true,
