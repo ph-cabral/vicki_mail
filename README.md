@@ -96,6 +96,15 @@ Contenedor `vicki-mail`, puerto host `8089`. `/health` para chequear,
 - Nada de esto se probó contra el buzón real (sin credenciales ni acceso de
   red desde este entorno) — antes de producción, correr `/process_now`
   contra un mensaje de prueba y revisar los logs.
+- **`LABEL_QUEUE` / `LABEL_CV_PROCESADO`**: usá `GET /labels` para confirmar
+  que esos IDs corresponden a los labels correctos en el buzón real (no son
+  legibles solo mirando el JSON de n8n).
+- **Archivo original del CV**: se sube a Drive (carpeta `DRIVE_FOLDER_CV_ARCHIVE`,
+  "ceve" en el workflow original) después de persistir en Postgres/Qdrant —
+  si falla la subida, solo se loguea, no bloquea la respuesta al candidato.
+- **Plantilla de CV al rechazar una foto**: se adjunta `DRIVE_TEMPLATE_CV_FILENAME`
+  (bajada por ID de Drive) al mail de "no procesamos fotos" — si falla la
+  descarga, el mail sale igual pero sin adjunto (se loguea).
 
 ## Mapeo con el workflow n8n original
 
@@ -115,4 +124,6 @@ Contenedor `vicki-mail`, puerto host `8089`. `/health` para chequear,
 | Read Ai / Fireflies (list + export + move) | `app/drive_client.py`, `nodes.meeting_notes_node` |
 | Send email / email1 / email2 / email3 / email4 / email5 | `app/email_templates.py` |
 | Agregar/Remove label, Marcar Como Leido, Delete a message | `nodes._cerrar`, `gmail_client.py` |
+| Upload file / Upload file1 (archivar CV en Drive) | `drive_client.upload_file`, `nodes.persist_cv_node` |
+| Download file (plantilla base de CV) | `drive_client.download_file`, `nodes.reply_imagen_node` |
 # vicki_mail

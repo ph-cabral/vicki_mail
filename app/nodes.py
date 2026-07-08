@@ -1,5 +1,5 @@
 """
-Nodos del grafo. Cada función recibe el EmailState y devuelve un dict con
+Nodos del grafo. Cada funcion recibe el EmailState y devuelve un dict con
 las claves que actualiza (estilo LangGraph). El estado ya llega con el
 mensaje + adjuntos descargados (ver main.py: gmail_client.get_message con
 download_attachments=True).
@@ -10,10 +10,13 @@ import logging
 from app import drive_client, gmail_client
 from app.config import config
 from app.constants import (
+    DRIVE_FOLDER_CV_ARCHIVE,
     DRIVE_FOLDER_FIREFLIES_DONE,
     DRIVE_FOLDER_FIREFLIES_SRC,
     DRIVE_FOLDER_READAI_DONE,
     DRIVE_FOLDER_READAI_SRC,
+    DRIVE_TEMPLATE_CV_FILE_ID,
+    DRIVE_TEMPLATE_CV_FILENAME,
     LABEL_CV_PROCESADO,
     LABEL_QUEUE,
     SENDER_FIREFLIES,
@@ -39,7 +42,7 @@ log = logging.getLogger("nodes")
 
 def _cerrar(state: EmailState, aplicar_label_procesado: bool = True) -> None:
     """Deja el mensaje fuera de la 'cola' (remueve LABEL_QUEUE + INBOX),
-    opcionalmente marca 'cv procesado', y lo marca como leído. Equivalente a
+    opcionalmente marca 'cv procesado', y lo marca como leido. Equivalente a
     los nodos 'Remove label from message' + 'Agregar Etiqueta cv procesado' +
     'Marcar Como Leido' del workflow n8n."""
     message_id = state.get("message_id")
@@ -60,7 +63,7 @@ def _nombre_destinatario(state: EmailState) -> str:
     return nombre or state.get("from_name") or ""
 
 
-# ── router ───────────────────────────────────────────────────────────────
+# -- router ------------------------------------------------------------------
 
 def router_email(state: EmailState) -> dict:
     from_addr = (state.get("from_address") or "").lower()
@@ -89,7 +92,7 @@ def router_email(state: EmailState) -> dict:
     return {"route": "candidato"}
 
 
-# ── rama candidato: adjuntos → texto → LLM → match → persistencia ──────────
+# -- rama candidato: adjuntos -> texto -> LLM -> match -> persistencia ------
 
 def check_attachments(state: EmailState) -> dict:
     cv = filtrar_adjunto_cv(state.get("attachments", []) or [])
@@ -124,8 +127,10 @@ def match_candidato_node(state: EmailState) -> dict:
 
 def persist_cv_node(state: EmailState) -> dict:
     """Escribe/actualiza el CV en Postgres (rag_system.documento_aprobado) y
-    en Qdrant (colección 'cvs'), tanto si el candidato es nuevo como si ya
-    estaba registrado — según lo pedido: siempre se reemplazan los datos."""
+    en Qdrant (coleccion 'cvs'), tanto si el candidato es nuevo como si ya
+    estaba registrado -- segun lo pedido: siempre se reemplazan los datos.
+    Tambien archiva el CV original en Drive (equivalente a los nodos
+    'Upload file'/'Upload file1' del workflow n8n)."""
     cv = state["cv_adjunto"]
     candidato = state["candidato"]
     try:
@@ -155,10 +160,16 @@ def persist_cv_node(state: EmailState) -> dict:
         )
     except Exception:
         log.exception("error persistiendo CV (candidato_id=%s)", candidato.get("id"))
+
+    try:
+        drive_client.upload_file(cv["data"], cv["filename"], DRIVE_FOLDER_CV_ARCHIVE, cv["mime_type"])
+    except Exception:
+        log.exception("no se pudo archivar el CV original en Drive (candidato_id=%s)", candidato.get("id"))
+
     return {}
 
 
-# ── respuestas + cierre ─────────────────────────────────────────────────────
+# -- respuestas + cierre ------------------------------------------------------
 
 def reply_nuevo_node(state: EmailState) -> dict:
     subject, html = postulacion_recibida(_nombre_destinatario(state))
@@ -175,8 +186,17 @@ def reply_existente_node(state: EmailState) -> dict:
 
 
 def reply_imagen_node(state: EmailState) -> dict:
+    """Foto/escaneo, no texto real: se responde pidiendo el formato correcto
+    y se adjunta la plantilla base de CV (equivalente al nodo 'Download
+    file' del workflow n8n, que bajaba 'CV para postulantes.docx')."""
     subject, html = foto_no_procesada(state.get("from_name") or "")
-    gmail_client.send_email(state["from_address"], subject, html)
+    attachments = []
+    try:
+        data = drive_client.download_file(DRIVE_TEMPLATE_CV_FILE_ID)
+        attachments.append({"filename": DRIVE_TEMPLATE_CV_FILENAME, "data": data})
+    except Exception:
+        log.exception("no se pudo descargar la plantilla base de CV desde Drive, se manda sin adjunto")
+    gmail_client.send_email(state["from_address"], subject, html, attachments=attachments)
     _cerrar(state)
     return {"accion_final": "imagen_rechazada"}
 
@@ -190,7 +210,7 @@ def reply_sin_cv_node(state: EmailState) -> dict:
 
 def delete_and_notice_node(state: EmailState) -> dict:
     """Remitente interno (@everwear.com.ar, no rrhh): se responde con el
-    recordatorio y se BORRA el mensaje (irreversible, gmail delete real —
+    recordatorio y se BORRA el mensaje (irreversible, gmail delete real --
     mismo comportamiento que el nodo 'Delete a message' de n8n)."""
     subject, html = recordatorio_uso_interno()
     gmail_client.send_email(state["from_address"], subject, html)
@@ -206,13 +226,13 @@ def ignore_node(state: EmailState) -> dict:
 
 
 def error_node(state: EmailState) -> dict:
-    """El LLM no devolvió un JSON parseable. Se deja el mensaje SIN marcar
+    """El LLM no devolvio un JSON parseable. Se deja el mensaje SIN marcar
     como procesado (sigue en la cola) para poder revisarlo/reintentar."""
-    log.error("fallo de análisis LLM en mensaje %s: %s", state.get("message_id"), state.get("perfil"))
+    log.error("fallo de analisis LLM en mensaje %s: %s", state.get("message_id"), state.get("perfil"))
     return {"accion_final": "error_llm"}
 
 
-# ── rama notas de reunión (Fireflies / Read AI) ─────────────────────────────
+# -- rama notas de reunion (Fireflies / Read AI) -----------------------------
 
 def meeting_notes_node(state: EmailState) -> dict:
     origen = "Read AI" if state.get("route") == "readai" else "Fireflies"
@@ -249,8 +269,8 @@ def meeting_notes_node(state: EmailState) -> dict:
         except Exception:
             log.exception("error procesando archivo %s de %s", f.get("id"), origen)
 
-    # el mail de notificación (de read.ai / fireflies) se archiva igual que
-    # el resto — no se pudo confirmar en el JSON si el original lo borraba
+    # el mail de notificacion (de read.ai / fireflies) se archiva igual que
+    # el resto -- no se pudo confirmar en el JSON si el original lo borraba
     # en vez de archivarlo, ver README.
     _cerrar(state, aplicar_label_procesado=False)
     return {"accion_final": f"meeting_notes_{origen.lower().replace(' ', '')}"}

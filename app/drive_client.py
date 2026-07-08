@@ -2,15 +2,17 @@
 Cliente Google Drive API. Reusa la misma credencial OAuth2 que gmail_client.
 
 Equivalente a los nodos n8n: "Read Ai"/"Fireflies" (list por carpeta),
-"HTTP Request" export a docx, "mover a Fireflies"/"Mover a Read AI" (move).
+"HTTP Request" export a docx, "mover a Fireflies"/"Mover a Read AI" (move),
+"Upload file"/"Upload file1" (archivar CV original), "Download file"
+(bajar la plantilla base de CV).
 """
+import io
 import logging
 from functools import lru_cache
 
 from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
-from googleapiclient.http import MediaIoBaseDownload
-import io
+from googleapiclient.http import MediaIoBaseDownload, MediaIoBaseUpload
 
 from app.config import config
 
@@ -53,6 +55,31 @@ def export_as_docx(file_id: str) -> bytes:
     while not done:
         _status, done = downloader.next_chunk()
     return buf.getvalue()
+
+
+def download_file(file_id: str) -> bytes:
+    """Descarga el contenido crudo de un archivo (no-Google-Doc) de Drive.
+    Equivalente al nodo 'Download file' — usado para bajar la plantilla base
+    de CV que se adjunta cuando rechazamos una foto/escaneo."""
+    svc = _service()
+    request = svc.files().get_media(fileId=file_id)
+    buf = io.BytesIO()
+    downloader = MediaIoBaseDownload(buf, request)
+    done = False
+    while not done:
+        _status, done = downloader.next_chunk()
+    return buf.getvalue()
+
+
+def upload_file(data: bytes, filename: str, folder_id: str, mime_type: str = "application/octet-stream") -> dict:
+    """Sube un archivo binario a una carpeta de Drive. Equivalente a los
+    nodos 'Upload file'/'Upload file1' — archiva el CV original recibido."""
+    svc = _service()
+    media = MediaIoBaseUpload(io.BytesIO(data), mimetype=mime_type, resumable=False)
+    metadata = {"name": filename, "parents": [folder_id]}
+    created = svc.files().create(body=metadata, media_body=media, fields="id,name").execute()
+    log.info("archivo %s subido a Drive (id=%s, carpeta=%s)", filename, created.get("id"), folder_id)
+    return created
 
 
 def move_file(file_id: str, destination_folder_id: str) -> None:

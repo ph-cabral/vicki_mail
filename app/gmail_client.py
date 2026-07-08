@@ -1,7 +1,7 @@
 """
 Cliente Gmail API. Reusa la credencial OAuth2 que ya tiene autorizada n8n
 para seleccion@everwear.com.ar (mismo client_id/secret, mismo refresh_token
-o uno nuevo emitido para esa misma app OAuth — ver README).
+o uno nuevo emitido para esa misma app OAuth -- ver README).
 
 Equivalente a los nodos n8n: "Recibir Mensaje" (getAll por label), "Obtener
 Archivos" (get + adjuntos), "Marcar Como Leido", "Agregar/Remove label",
@@ -10,6 +10,7 @@ Archivos" (get + adjuntos), "Marcar Como Leido", "Agregar/Remove label",
 import base64
 import email.utils
 import logging
+from email.mime.application import MIMEApplication
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from functools import lru_cache
@@ -76,7 +77,7 @@ def _extract_body_text(payload: dict) -> str:
 
 
 def list_labels() -> list[dict]:
-    """id + nombre de todos los labels del buzón (para verificar LABEL_QUEUE /
+    """id + nombre de todos los labels del buzon (para verificar LABEL_QUEUE /
     LABEL_CV_PROCESADO en app/constants.py contra los IDs reales)."""
     svc = _service()
     resp = svc.users().labels().list(userId="me").execute()
@@ -161,12 +162,25 @@ def delete_message(message_id: str) -> None:
     _service().users().messages().delete(userId="me", id=message_id).execute()
 
 
-def send_email(to_address: str, subject: str, html_body: str, from_address: str | None = None) -> None:
-    msg = MIMEMultipart("alternative")
+def send_email(
+    to_address: str, subject: str, html_body: str, from_address: str | None = None,
+    attachments: list[dict] | None = None,
+) -> None:
+    """attachments: [{"filename": ..., "data": bytes}] (opcional)."""
+    msg = MIMEMultipart("mixed")
     msg["To"] = to_address
     msg["From"] = from_address or config.RRHH_EMAIL
     msg["Subject"] = subject
-    msg.attach(MIMEText(html_body, "html", "utf-8"))
+
+    alt = MIMEMultipart("alternative")
+    alt.attach(MIMEText(html_body, "html", "utf-8"))
+    msg.attach(alt)
+
+    for att in attachments or []:
+        part = MIMEApplication(att["data"], Name=att["filename"])
+        part["Content-Disposition"] = f'attachment; filename="{att["filename"]}"'
+        msg.attach(part)
+
     raw = base64.urlsafe_b64encode(msg.as_bytes()).decode("utf-8")
     _service().users().messages().send(userId="me", body={"raw": raw}).execute()
-    log.info("mail enviado a %s: %s", to_address, subject)
+    log.info("mail enviado a %s: %s%s", to_address, subject, f" (+{len(attachments)} adjunto/s)" if attachments else "")
