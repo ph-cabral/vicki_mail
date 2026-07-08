@@ -75,6 +75,14 @@ def _extract_body_text(payload: dict) -> str:
     return ""
 
 
+def list_labels() -> list[dict]:
+    """id + nombre de todos los labels del buzón (para verificar LABEL_QUEUE /
+    LABEL_CV_PROCESADO en app/constants.py contra los IDs reales)."""
+    svc = _service()
+    resp = svc.users().labels().list(userId="me").execute()
+    return [{"id": l["id"], "name": l["name"]} for l in resp.get("labels", [])]
+
+
 def list_queue(label_id: str, max_results: int = 5) -> list[str]:
     """IDs de mensajes con el label 'cola' (equivalente a nodo 'Recibir Mensaje')."""
     svc = _service()

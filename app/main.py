@@ -6,7 +6,7 @@ from fastapi import FastAPI
 
 from app import gmail_client
 from app.config import config
-from app.constants import LABEL_QUEUE
+from app.constants import LABEL_CV_PROCESADO, LABEL_QUEUE
 from app.graph import build_graph
 
 logging.basicConfig(level=logging.INFO)
@@ -72,6 +72,19 @@ app = FastAPI(title="vicki_mail", description="Ingesta de CVs por email + notas 
 @app.get("/health")
 def health():
     return {"status": "ok", "service": "vicki-mail"}
+
+
+@app.get("/labels")
+def labels():
+    """Lista todos los labels del buzón con su ID real — para verificar que
+    LABEL_QUEUE / LABEL_CV_PROCESADO en .env apuntan a lo correcto."""
+    return {
+        "labels": gmail_client.list_labels(),
+        "configurados": {
+            "LABEL_QUEUE": LABEL_QUEUE,
+            "LABEL_CV_PROCESADO": __import__("app.constants", fromlist=["LABEL_CV_PROCESADO"]).LABEL_CV_PROCESADO,
+        },
+    }
 
 
 @app.post("/process_now")
