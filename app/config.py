@@ -28,8 +28,10 @@ class Config:
     QDRANT_COLLECTION_CVS: str = os.getenv("QDRANT_COLLECTION_CVS", "cvs")
     QDRANT_COLLECTION_DOCS: str = os.getenv("QDRANT_COLLECTION_DOCS", "documentos")
 
-    # ── Polling ──────────────────────────────────────────────────────────
-    POLL_INTERVAL_SECONDS: int = int(os.getenv("POLL_INTERVAL_SECONDS", "60"))
+    # ── Polling (cron, horario laboral -- ver TZ mas abajo) ────────────────
+    POLL_CRON_DAY_OF_WEEK: str = os.getenv("POLL_CRON_DAY_OF_WEEK", "mon-fri")
+    POLL_CRON_HOUR: str = os.getenv("POLL_CRON_HOUR", "8-17")
+    POLL_CRON_MINUTE: str = os.getenv("POLL_CRON_MINUTE", "*/2")
     BATCH_SIZE: int = int(os.getenv("BATCH_SIZE", "5"))
 
     # ── Emails / dominios ────────────────────────────────────────────────
