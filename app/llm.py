@@ -8,12 +8,14 @@ import logging
 import re
 
 from anthropic import Anthropic
+from openai import OpenAI
 
 from app.config import config
 
 log = logging.getLogger("llm")
 
 _client: Anthropic | None = None
+_openai_client: OpenAI | None = None
 
 
 def _get_client() -> Anthropic:
@@ -21,6 +23,13 @@ def _get_client() -> Anthropic:
     if _client is None:
         _client = Anthropic(api_key=config.ANTHROPIC_KEY)
     return _client
+
+
+def _get_openai_client() -> OpenAI:
+    global _openai_client
+    if _openai_client is None:
+        _openai_client = OpenAI(api_key=config.OPENAI_API_KEY)
+    return _openai_client
 
 
 SCHEMA_PROMPT = """Estructura:
@@ -55,7 +64,14 @@ Devuelve SOLO el JSON válido, sin envolverlo en comillas, sin escapar caractere
 El JSON debe ser válido y parseable directamente."""
 
 
-def analizar_cv(texto_cv: str) -> dict:
+def _clean_json(raw: str) -> str:
+    raw = raw.strip()
+    raw = re.sub(r"^```json\s*", "", raw, flags=re.IGNORECASE)
+    raw = re.sub(r"```$", "", raw).strip()
+    return raw
+
+
+def _analizar_cv_claude(texto_cv: str) -> str:
     client = _get_client()
     resp = client.messages.create(
         model=config.ANTHROPIC_MODEL,
@@ -66,11 +82,33 @@ def analizar_cv(texto_cv: str) -> dict:
             "content": f"{SCHEMA_PROMPT}\n\nCV:\n{texto_cv[:12000]}",
         }],
     )
-    raw = resp.content[0].text.strip()
-    raw = re.sub(r"^```json\s*", "", raw, flags=re.IGNORECASE)
-    raw = re.sub(r"```$", "", raw).strip()
+    return resp.content[0].text
+
+
+def _analizar_cv_openai(texto_cv: str) -> str:
+    client = _get_openai_client()
+    resp = client.chat.completions.create(
+        model=config.OPENAI_MODEL,
+        max_tokens=8000,
+        temperature=0,
+        messages=[{
+            "role": "user",
+            "content": f"{SCHEMA_PROMPT}\n\nCV:\n{texto_cv[:12000]}",
+        }],
+    )
+    return resp.choices[0].message.content
+
+
+def analizar_cv(texto_cv: str) -> dict:
+    try:
+        raw = _analizar_cv_claude(texto_cv)
+    except Exception as e:
+        log.warning("Claude falló (¿sin créditos/tokens?), fallback a OpenAI: %s", e)
+        raw = _analizar_cv_openai(texto_cv)
+
+    raw = _clean_json(raw)
     try:
         return json.loads(raw)
     except json.JSONDecodeError:
-        log.error("no se pudo parsear respuesta de Claude (primeros 500 chars): %s", raw[:500])
+        log.error("no se pudo parsear respuesta del LLM (primeros 500 chars): %s", raw[:500])
         return {"error": "parse_failed", "raw": raw}

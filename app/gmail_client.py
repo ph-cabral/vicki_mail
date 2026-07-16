@@ -146,6 +146,29 @@ def mark_as_read(message_id: str) -> None:
     ).execute()
 
 
+def mark_important(message_id: str) -> None:
+    _service().users().messages().modify(
+        userId="me", id=message_id, body={"addLabelIds": ["IMPORTANT"]}
+    ).execute()
+
+
+def thread_has_sent_message(thread_id: str, exclude_message_id: str = "") -> bool:
+    """True si el hilo ya tiene un mensaje nuestro (label SENT) distinto del
+    actual -- sirve para detectar que ya respondimos antes en este hilo y
+    evitar repetir la respuesta automatica cada vez que el remitente
+    contesta (esa repeticion fue el origen del loop de 'Recordatorio!!!')."""
+    if not thread_id:
+        return False
+    svc = _service()
+    thread = svc.users().threads().get(userId="me", id=thread_id, format="minimal").execute()
+    for m in thread.get("messages", []) or []:
+        if m.get("id") == exclude_message_id:
+            continue
+        if "SENT" in (m.get("labelIds") or []):
+            return True
+    return False
+
+
 def add_labels(message_id: str, label_ids: list[str]) -> None:
     _service().users().messages().modify(
         userId="me", id=message_id, body={"addLabelIds": label_ids}

@@ -57,6 +57,41 @@ def _cerrar(state: EmailState, aplicar_label_procesado: bool = True) -> None:
         log.exception("no se pudo finalizar/etiquetar el mensaje %s", message_id)
 
 
+def _reenviar_a_rrhh(state: EmailState) -> None:
+    """Caso 'ya le respondimos antes en este hilo y volvio a escribir': ya
+    no es para nuestro flujo automatico, se reenvia tal cual a RRHH interno
+    (asunto fijo "nos escribieron a seleccion") y se elimina el original
+    del buzon de seleccion (evita que siga dando vueltas / se re-procese)."""
+    message_id = state.get("message_id")
+    if not message_id:
+        return
+    remitente = state.get("from_name") or state.get("from_address") or "desconocido"
+    cuerpo_original = (state.get("body_text") or "").strip() or "(sin contenido)"
+    html = (
+        f"<p>Mensaje reenviado desde {config.GMAIL_USER}.</p>"
+        f"<p><b>De:</b> {remitente} &lt;{state.get('from_address', '')}&gt;<br>"
+        f"<b>Asunto original:</b> {state.get('subject', '')}</p>"
+        f"<hr>"
+        f"<p>{cuerpo_original.replace(chr(10), '<br>')}</p>"
+    )
+    attachments = [
+        {"filename": a["filename"], "data": a["data"]}
+        for a in (state.get("attachments") or [])
+    ] or None
+    try:
+        gmail_client.send_email(
+            config.RRHH_INTERNAL_CONTACT, "nos escribieron a seleccion", html,
+            attachments=attachments,
+        )
+    except Exception:
+        log.exception("no se pudo reenviar a RRHH el mensaje %s", message_id)
+        return
+    try:
+        gmail_client.delete_message(message_id)
+    except Exception:
+        log.exception("no se pudo eliminar el mensaje %s tras reenviarlo a RRHH", message_id)
+
+
 def _nombre_destinatario(state: EmailState) -> str:
     candidato = state.get("candidato") or {}
     nombre = " ".join(x for x in [candidato.get("nombre"), candidato.get("apellido")] if x).strip()
@@ -70,16 +105,23 @@ def router_email(state: EmailState) -> dict:
     reply_to = (state.get("reply_to_address") or "").lower()
     label_ids = state.get("label_ids") or []
 
+    # anti-loop: mensajes propios (SENT) o de/hacia el propio buzon/RRHH se
+    # ignoran ANTES de evaluar es_interno, para no re-responder una respuesta
+    # nuestra que haya vuelto a entrar al hilo (bucle infinito).
+    if "SENT" in label_ids:
+        return {"route": "ignorar"}
+
+    propias_addr = {config.GMAIL_USER.lower(), config.RRHH_EMAIL.lower()}
+    if from_addr in propias_addr:
+        return {"route": "ignorar"}
+
     candidatos_addr = [a for a in [reply_to, from_addr] if a]
     es_interno = (
         any(a.endswith(f"@{config.INTERNAL_DOMAIN}") for a in candidatos_addr)
-        and config.RRHH_EMAIL.lower() not in candidatos_addr
+        and not (propias_addr & set(candidatos_addr))
     )
     if es_interno:
         return {"route": "interno"}
-
-    if "SENT" in label_ids:
-        return {"route": "ignorar"}
 
     if from_addr == SENDER_READAI:
         return {"route": "readai"}
@@ -202,6 +244,13 @@ def reply_imagen_node(state: EmailState) -> dict:
 
 
 def reply_sin_cv_node(state: EmailState) -> dict:
+    if gmail_client.thread_has_sent_message(state.get("thread_id", ""), state.get("message_id", "")):
+        # ya le contestamos "esto es solo para CVs" antes en este hilo y
+        # volvio a escribir sin adjuntar CV: no es otro intento fallido, es
+        # una respuesta humana real (ej. propuesta comercial, pregunta) ->
+        # se reenvia a RRHH y se elimina, sin repetir la plantilla.
+        _reenviar_a_rrhh(state)
+        return {"accion_final": "reenviado_rrhh"}
     subject, html = solo_recepcion_cv(state.get("from_name") or "")
     gmail_client.send_email(state["from_address"], subject, html)
     _cerrar(state)
@@ -212,6 +261,12 @@ def delete_and_notice_node(state: EmailState) -> dict:
     """Remitente interno (@everwear.com.ar, no rrhh): se responde con el
     recordatorio y se BORRA el mensaje (irreversible, gmail delete real --
     mismo comportamiento que el nodo 'Delete a message' de n8n)."""
+    if gmail_client.thread_has_sent_message(state.get("thread_id", ""), state.get("message_id", "")):
+        # ya se mando el recordatorio antes en este hilo (esto es lo que
+        # generaba el loop de "Recordatorio!!!") -> no volver a
+        # responder/borrar acá, se reenvia a RRHH y se elimina.
+        _reenviar_a_rrhh(state)
+        return {"accion_final": "reenviado_rrhh"}
     subject, html = recordatorio_uso_interno()
     gmail_client.send_email(state["from_address"], subject, html)
     gmail_client.delete_message(state["message_id"])

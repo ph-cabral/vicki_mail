@@ -19,6 +19,7 @@ class Config:
     ANTHROPIC_KEY: str = os.getenv("ANTHROPIC_KEY", "")
     ANTHROPIC_MODEL: str = os.getenv("ANTHROPIC_MODEL", "claude-haiku-4-5-20251001")
     OPENAI_API_KEY: str = os.getenv("OPENAI_API_KEY", "")
+    OPENAI_MODEL: str = os.getenv("OPENAI_MODEL", "gpt-4.1-mini")
     EMBEDDING_MODEL: str = os.getenv("EMBEDDING_MODEL", "text-embedding-3-small")
 
     # ── Qdrant ───────────────────────────────────────────────────────────
