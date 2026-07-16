@@ -57,9 +57,18 @@ async def lifespan(_app: FastAPI):
     log.info("grafo compilado")
 
     scheduler = AsyncIOScheduler(timezone=config.TZ)
-    scheduler.add_job(procesar_cola, "interval", seconds=config.POLL_INTERVAL_SECONDS, id="procesar_cola")
+    scheduler.add_job(
+        procesar_cola, "cron",
+        day_of_week=config.POLL_CRON_DAY_OF_WEEK,
+        hour=config.POLL_CRON_HOUR,
+        minute=config.POLL_CRON_MINUTE,
+        id="procesar_cola",
+    )
     scheduler.start()
-    log.info("scheduler iniciado (cada %ss)", config.POLL_INTERVAL_SECONDS)
+    log.info(
+        "scheduler iniciado (cron: dia=%s hora=%s minuto=%s, tz=%s)",
+        config.POLL_CRON_DAY_OF_WEEK, config.POLL_CRON_HOUR, config.POLL_CRON_MINUTE, config.TZ,
+    )
     try:
         yield
     finally:
