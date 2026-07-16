@@ -32,7 +32,14 @@ from app.email_templates import (
     solo_recepcion_cv,
     ya_registrado,
 )
-from app.extract import calcular_hash, es_imagen_o_escaneo, extraer_texto, filtrar_adjunto_cv
+from app.extract import (
+    EXTENSION_POR_MIME_CONVERTIBLE,
+    calcular_hash,
+    convertir_a_pdf,
+    es_imagen_o_escaneo,
+    extraer_texto,
+    filtrar_adjunto_cv,
+)
 from app.graph_state import EmailState
 from app.llm import analizar_cv
 from app.qdrant_store import upsert_documento
@@ -57,11 +64,11 @@ def _cerrar(state: EmailState, aplicar_label_procesado: bool = True) -> None:
         log.exception("no se pudo finalizar/etiquetar el mensaje %s", message_id)
 
 
-def _reenviar_a_rrhh(state: EmailState) -> None:
-    """Caso 'ya le respondimos antes en este hilo y volvio a escribir': ya
-    no es para nuestro flujo automatico, se reenvia tal cual a RRHH interno
-    (asunto fijo "nos escribieron a seleccion") y se elimina el original
-    del buzon de seleccion (evita que siga dando vueltas / se re-procese)."""
+def _reenviar_a_rrhh(state: EmailState, asunto: str = "nos escribieron a seleccion") -> None:
+    """Ya no es para nuestro flujo automatico (hilo repetido, o la IA fallo
+    su unico intento): se reenvia tal cual a RRHH interno y se elimina el
+    original del buzon de seleccion (evita que siga dando vueltas / se
+    re-procese)."""
     message_id = state.get("message_id")
     if not message_id:
         return
@@ -80,7 +87,7 @@ def _reenviar_a_rrhh(state: EmailState) -> None:
     ] or None
     try:
         gmail_client.send_email(
-            config.RRHH_INTERNAL_CONTACT, "nos escribieron a seleccion", html,
+            config.RRHH_INTERNAL_CONTACT, asunto, html,
             attachments=attachments,
         )
     except Exception:
@@ -144,17 +151,39 @@ def check_attachments(state: EmailState) -> dict:
 
 
 def extract_text_node(state: EmailState) -> dict:
+    """cv_adjunto (el archivo ORIGINAL) nunca se toca -- se archiva/persiste
+    tal cual mas adelante. Si es doc/docx, se intenta primero convertirlo a
+    PDF (contingencia 1, mejor fidelidad) para mandarselo entero a la IA via
+    cv_para_ia; si la conversion falla, contingencia 2: se sigue con el
+    texto extraido localmente (mammoth/antiword), como antes."""
     cv = state["cv_adjunto"]
+    mime_type = cv["mime_type"]
     data = cv["data"]
     hash_archivo = calcular_hash(data)
-    texto = extraer_texto(cv["mime_type"], data)
+
+    extension = EXTENSION_POR_MIME_CONVERTIBLE.get(mime_type)
+    if extension:
+        pdf_bytes = convertir_a_pdf(data, extension)
+        if pdf_bytes:
+            texto = extraer_texto("application/pdf", pdf_bytes)
+            if es_imagen_o_escaneo(texto):
+                return {"route": "imagen", "hash_archivo": hash_archivo}
+            return {
+                "route": "texto_ok",
+                "texto_cv": texto,
+                "hash_archivo": hash_archivo,
+                "cv_para_ia": {"mime_type": "application/pdf", "data": pdf_bytes, "filename": cv.get("filename", "cv.pdf")},
+            }
+        log.warning("conversion a PDF fallo para %s, contingencia: texto local", cv.get("filename"))
+
+    texto = extraer_texto(mime_type, data)
     if es_imagen_o_escaneo(texto):
         return {"route": "imagen", "hash_archivo": hash_archivo}
     return {"route": "texto_ok", "texto_cv": texto, "hash_archivo": hash_archivo}
 
 
 def analyze_cv_node(state: EmailState) -> dict:
-    perfil = analizar_cv(state["texto_cv"])
+    perfil = analizar_cv(state.get("cv_para_ia") or state["cv_adjunto"], state["texto_cv"])
     if perfil.get("error"):
         return {"route": "error_llm", "perfil": perfil}
     texto_limpio = construir_texto_limpio(perfil)
@@ -281,10 +310,12 @@ def ignore_node(state: EmailState) -> dict:
 
 
 def error_node(state: EmailState) -> dict:
-    """El LLM no devolvio un JSON parseable. Se deja el mensaje SIN marcar
-    como procesado (sigue en la cola) para poder revisarlo/reintentar."""
+    """Un solo intento por email: si la IA no devolvio un JSON parseable
+    (ni Claude ni el fallback a OpenAI), no se reintenta en el proximo
+    poll -- se reenvia el CV a RRHH para carga manual y se cierra."""
     log.error("fallo de analisis LLM en mensaje %s: %s", state.get("message_id"), state.get("perfil"))
-    return {"accion_final": "error_llm"}
+    _reenviar_a_rrhh(state, asunto="CV recibido, no se pudo procesar automaticamente")
+    return {"accion_final": "error_llm_reenviado"}
 
 
 # -- rama notas de reunion (Fireflies / Read AI) -----------------------------

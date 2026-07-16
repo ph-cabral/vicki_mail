@@ -8,6 +8,7 @@ calcula hash2", "Detector de CV1".
 """
 import hashlib
 import logging
+import os
 import subprocess
 import tempfile
 import unicodedata
@@ -106,3 +107,43 @@ def extraer_texto(mime_type: str, data: bytes) -> str:
 def es_imagen_o_escaneo(texto: str) -> bool:
     """True si el texto extraído es demasiado corto (foto/escaneo sin texto real)."""
     return len((texto or "").strip()) < MIN_CHARS_TEXTO_VALIDO
+
+
+EXTENSION_POR_MIME_CONVERTIBLE = {
+    "application/msword": ".doc",
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.document": ".docx",
+}
+
+
+def convertir_a_pdf(data: bytes, extension: str, timeout: int = 60) -> bytes | None:
+    """Convierte doc/docx a PDF via LibreOffice headless -- preserva tablas,
+    columnas, headers/footers (mejor fidelidad que python-docx/antiword, que
+    solo sacan parrafos de texto plano). Se usa como paso previo para poder
+    mandarle el archivo entero a Claude/OpenAI igual que un PDF.
+
+    Devuelve None si la conversion falla (archivo corrupto, timeout,
+    LibreOffice no instalado, etc.) -- el llamador debe caer como
+    contingencia a la extraccion de texto local (mammoth/antiword)."""
+    with tempfile.TemporaryDirectory() as tmp:
+        origen = os.path.join(tmp, f"in{extension}")
+        with open(origen, "wb") as f:
+            f.write(data)
+        perfil = os.path.join(tmp, "perfil_lo")
+        try:
+            subprocess.run(
+                [
+                    "soffice", "--headless", "--norestore",
+                    f"-env:UserInstallation=file://{perfil}",
+                    "--convert-to", "pdf", "--outdir", tmp, origen,
+                ],
+                capture_output=True, timeout=timeout, check=True,
+            )
+        except (subprocess.CalledProcessError, subprocess.TimeoutExpired, FileNotFoundError) as e:
+            log.warning("no se pudo convertir a PDF con LibreOffice: %s", e)
+            return None
+        salida = os.path.join(tmp, "in.pdf")
+        if not os.path.exists(salida):
+            log.warning("LibreOffice no genero el PDF esperado en %s", salida)
+            return None
+        with open(salida, "rb") as f:
+            return f.read()

@@ -6,9 +6,11 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 WORKDIR /app
 
-# antiword: extracción de .doc viejo (formato binario, no soportado por python-docx/mammoth)
+# antiword: extracción de .doc viejo, contingencia si falla la conversión a PDF.
+# libreoffice-writer: convierte doc/docx a PDF (soffice --headless) para poder
+# mandarle el archivo entero a Claude/OpenAI igual que un PDF nativo.
 RUN apt-get update && apt-get install -y --no-install-recommends \
-      tzdata curl antiword \
+      tzdata curl antiword libreoffice-writer \
     && rm -rf /var/lib/apt/lists/*
 
 COPY requirements.txt .

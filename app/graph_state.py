@@ -19,7 +19,8 @@ class EmailState(TypedDict, total=False):
     route: Optional[str]
 
     # rama CV
-    cv_adjunto: Optional[dict]
+    cv_adjunto: Optional[dict]  # archivo ORIGINAL (se archiva/persiste tal cual)
+    cv_para_ia: Optional[dict]  # si doc/docx se pudo convertir a PDF: version que se manda a Claude/OpenAI (mejor extraccion). None -> se usa cv_adjunto/texto_cv.
     texto_cv: Optional[str]
     hash_archivo: Optional[str]
     perfil: Optional[dict]

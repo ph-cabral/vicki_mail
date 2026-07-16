@@ -1,8 +1,14 @@
 """
 Análisis de CV con Claude. Mismo esquema/prompt que el nodo n8n
-"Analyze document1" + "Parsear respuesta LLM", adaptado para recibir texto ya
-extraído (en vez de mandar el binario) — funciona igual para pdf/doc/docx/txt.
+"Analyze document1" + "Parsear respuesta LLM".
+
+Para PDF: se manda el archivo entero (base64) a Claude/OpenAI -- la propia
+API lo extrae (mejor calidad que pdfplumber, especialmente en CVs con
+tablas/columnas/escaneos), tal cual se hacia en el workflow n8n original.
+Para docx/doc/txt: esas APIs no aceptan el binario como documento, se sigue
+mandando el texto ya extraido localmente (extract.py).
 """
+import base64
 import json
 import logging
 import re
@@ -71,40 +77,77 @@ def _clean_json(raw: str) -> str:
     return raw
 
 
-def _analizar_cv_claude(texto_cv: str) -> str:
+def _es_pdf(cv_adjunto: dict) -> bool:
+    return (cv_adjunto or {}).get("mime_type") == "application/pdf"
+
+
+def _analizar_cv_claude(cv_adjunto: dict, texto_cv: str) -> str:
     client = _get_client()
+    if _es_pdf(cv_adjunto):
+        content = [
+            {
+                "type": "document",
+                "source": {
+                    "type": "base64",
+                    "media_type": "application/pdf",
+                    "data": base64.standard_b64encode(cv_adjunto["data"]).decode("utf-8"),
+                },
+            },
+            {"type": "text", "text": SCHEMA_PROMPT},
+        ]
+    else:
+        content = f"{SCHEMA_PROMPT}\n\nCV:\n{texto_cv[:12000]}"
     resp = client.messages.create(
         model=config.ANTHROPIC_MODEL,
         max_tokens=8000,
         temperature=0,
-        messages=[{
-            "role": "user",
-            "content": f"{SCHEMA_PROMPT}\n\nCV:\n{texto_cv[:12000]}",
-        }],
+        messages=[{"role": "user", "content": content}],
     )
     return resp.content[0].text
 
 
-def _analizar_cv_openai(texto_cv: str) -> str:
+def _analizar_cv_openai(cv_adjunto: dict, texto_cv: str) -> str:
     client = _get_openai_client()
+    if _es_pdf(cv_adjunto):
+        b64 = base64.standard_b64encode(cv_adjunto["data"]).decode("utf-8")
+        content = [
+            {
+                "type": "file",
+                "file": {
+                    "filename": cv_adjunto.get("filename", "cv.pdf"),
+                    "file_data": f"data:application/pdf;base64,{b64}",
+                },
+            },
+            {"type": "text", "text": SCHEMA_PROMPT},
+        ]
+    else:
+        content = f"{SCHEMA_PROMPT}\n\nCV:\n{texto_cv[:12000]}"
     resp = client.chat.completions.create(
         model=config.OPENAI_MODEL,
         max_tokens=8000,
         temperature=0,
-        messages=[{
-            "role": "user",
-            "content": f"{SCHEMA_PROMPT}\n\nCV:\n{texto_cv[:12000]}",
-        }],
+        messages=[{"role": "user", "content": content}],
     )
     return resp.choices[0].message.content
 
 
-def analizar_cv(texto_cv: str) -> dict:
+def analizar_cv(cv_adjunto: dict, texto_cv: str) -> dict:
+    """Un solo intento por email: Claude, y si falla, un unico fallback a
+    OpenAI. Si ese tambien falla (o el JSON no parsea), se devuelve
+    {"error": ...} en vez de reintentar -- el llamador (nodes.py) cierra el
+    mensaje en el primer fallo, no lo vuelve a poner en cola.
+
+    Si el adjunto es PDF, se manda el archivo entero (cv_adjunto["data"]);
+    para el resto de formatos se manda texto_cv (ya extraido localmente)."""
     try:
-        raw = _analizar_cv_claude(texto_cv)
+        raw = _analizar_cv_claude(cv_adjunto, texto_cv)
     except Exception as e:
         log.warning("Claude falló (¿sin créditos/tokens?), fallback a OpenAI: %s", e)
-        raw = _analizar_cv_openai(texto_cv)
+        try:
+            raw = _analizar_cv_openai(cv_adjunto, texto_cv)
+        except Exception as e2:
+            log.error("OpenAI también falló analizando CV: %s", e2)
+            return {"error": "llm_failed", "detail": str(e2)}
 
     raw = _clean_json(raw)
     try:
