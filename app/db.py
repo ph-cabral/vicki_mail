@@ -271,6 +271,12 @@ def construir_texto_limpio(perfil: dict) -> str:
 
     lineas.append("EXPERIENCIA LABORAL:")
     for exp in perfil.get("experiencia_laboral", []) or []:
+        if not isinstance(exp, dict):
+            # el LLM a veces devuelve un string suelto en vez del objeto
+            # esperado (visto con el fallback a OpenAI) -- no crashear, solo
+            # mostrar el texto tal cual.
+            lineas += [f"- {exp}", ""]
+            continue
         lineas += [
             f"- Empresa: {exp.get('empresa', 'N/A')}",
             f"  Puesto: {exp.get('puesto', 'N/A')}",
@@ -282,6 +288,13 @@ def construir_texto_limpio(perfil: dict) -> str:
 
     lineas.append("FORMACIÓN ACADÉMICA:")
     for form in perfil.get("formacion_academica", []) or []:
+        if not isinstance(form, dict):
+            # mismo caso que experiencia_laboral -- el schema prompt no le
+            # da un template de objeto a este campo (a diferencia de
+            # experiencia_laboral), así que el LLM devuelve strings sueltos
+            # con más frecuencia todavía.
+            lineas.append(f"- {form}")
+            continue
         lineas.append(
             f"- {form.get('titulo', 'N/A')} en {form.get('institucion', 'N/A')} "
             f"({form.get('nivel', 'N/A')}) - {form.get('estado', 'N/A')}"

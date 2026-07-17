@@ -186,7 +186,18 @@ def analyze_cv_node(state: EmailState) -> dict:
     perfil = analizar_cv(state.get("cv_para_ia") or state["cv_adjunto"], state["texto_cv"])
     if perfil.get("error"):
         return {"route": "error_llm", "perfil": perfil}
-    texto_limpio = construir_texto_limpio(perfil)
+    try:
+        texto_limpio = construir_texto_limpio(perfil)
+    except Exception as e:
+        # el JSON del LLM parseo bien pero algun campo vino con una forma
+        # inesperada (ej. formacion_academica con strings sueltos en vez de
+        # objetos) -- no dejar que esto crashee el grafo entero y deje el
+        # mensaje reintentando en loop infinito (eso paso: mismo mensaje
+        # fallando cada 2 min, gastando llamadas a OpenAI sin nunca
+        # resolverse). Se trata igual que un fallo de analisis: se reenvia
+        # a RRHH para carga manual y se cierra.
+        log.error("construir_texto_limpio fallo con perfil bien formado (%s): %s", type(e).__name__, e)
+        return {"route": "error_llm", "perfil": {"error": "texto_limpio_failed", "detail": str(e), "perfil_crudo": perfil}}
     return {"route": "ok", "perfil": perfil, "texto_limpio": texto_limpio}
 
 
