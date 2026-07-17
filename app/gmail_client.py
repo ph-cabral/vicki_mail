@@ -85,12 +85,38 @@ def list_labels() -> list[dict]:
 
 
 def list_queue(label_id: str, max_results: int = 5) -> list[str]:
-    """IDs de mensajes con el label 'cola' (equivalente a nodo 'Recibir Mensaje')."""
+    """IDs de mensajes con el label 'cola' (equivalente a nodo 'Recibir Mensaje').
+    Ya no se usa para descubrir mensajes nuevos (ver list_inbox) -- se deja
+    disponible como fallback/debug si hiciera falta volver al esquema viejo
+    basado en un filtro de Gmail externo."""
     svc = _service()
     resp = svc.users().messages().list(
         userId="me", labelIds=[label_id], maxResults=max_results
     ).execute()
     return [m["id"] for m in resp.get("messages", [])]
+
+
+def list_inbox(max_results: int = 5) -> list[str]:
+    """IDs de mensajes en la bandeja de entrada, mas viejo primero.
+
+    Reemplaza a list_queue() como mecanismo de descubrimiento: en vez de
+    depender de que un filtro de Gmail configurado aparte en la cuenta le
+    ponga el label 'cola' a lo que llega (y de que ese filtro tambien
+    etiquete las respuestas dentro de un hilo ya existente, algo que no se
+    podia confirmar sin acceso a la cuenta real), esto lee el inbox
+    directo -- cualquier mensaje que siga en INBOX es, por definicion, algo
+    que todavia no se proceso (cada rama del grafo saca el mensaje de INBOX
+    al terminar, ver nodes.py:_cerrar / delete_message / _reenviar_a_rrhh).
+
+    Se excluyen los mensajes que enviamos nosotros mismos (label SENT) --
+    ademas del chequeo anti-loop que ya hace router_email, evita gastar una
+    llamada de API en algo que se va a ignorar de todas formas."""
+    svc = _service()
+    resp = svc.users().messages().list(
+        userId="me", q="in:inbox -label:sent -label:chats", maxResults=max_results
+    ).execute()
+    ids = [m["id"] for m in resp.get("messages", [])]
+    return list(reversed(ids))  # la API devuelve mas nuevo primero; procesamos FIFO
 
 
 def get_message(message_id: str, download_attachments: bool = False) -> dict:

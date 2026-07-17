@@ -18,12 +18,14 @@ scheduler: AsyncIOScheduler | None = None
 
 def procesar_cola() -> None:
     """Job del scheduler: equivalente al 'Schedule Trigger' + 'Recibir
-    Mensaje' de n8n. Toma hasta BATCH_SIZE mensajes de la cola (LABEL_QUEUE)
-    y corre el grafo para cada uno, uno por vez."""
+    Mensaje' de n8n. Toma hasta BATCH_SIZE mensajes del inbox (ya no
+    depende de que un filtro de Gmail externo les haya puesto el label
+    'cola' -- ver gmail_client.list_inbox) y corre el grafo para cada uno,
+    uno por vez."""
     try:
-        ids = gmail_client.list_queue(LABEL_QUEUE, max_results=config.BATCH_SIZE)
+        ids = gmail_client.list_inbox(max_results=config.BATCH_SIZE)
     except Exception:
-        log.exception("no se pudo listar la cola de Gmail")
+        log.exception("no se pudo listar el inbox de Gmail")
         return
 
     for message_id in ids:
@@ -86,7 +88,9 @@ def health():
 @app.get("/labels")
 def labels():
     """Lista todos los labels del buzon con su ID real -- para verificar que
-    LABEL_QUEUE / LABEL_CV_PROCESADO en .env apuntan a lo correcto."""
+    LABEL_CV_PROCESADO en .env apunta a lo correcto. LABEL_QUEUE queda solo
+    de referencia/fallback (list_queue en gmail_client.py); el descubrimiento
+    de mensajes nuevos ya no depende de el, ver list_inbox()."""
     return {
         "labels": gmail_client.list_labels(),
         "configurados": {

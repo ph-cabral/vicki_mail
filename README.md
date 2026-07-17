@@ -8,9 +8,14 @@ request/response como `vicki_chat`.
 
 ## Qué hace
 
-1. Cada `POLL_INTERVAL_SECONDS` (default 60), busca mensajes con el label
-   "cola" (`LABEL_QUEUE`) — el mismo patrón que usaba n8n: un filtro de Gmail
-   ya configurado en la cuenta le pone ese label a lo que llega.
+1. Cada `POLL_INTERVAL_SECONDS` (default 60), busca mensajes que sigan en el
+   inbox (`gmail_client.list_inbox`, `q=in:inbox -label:sent -label:chats`).
+   Ya no depende del label "cola" (`LABEL_QUEUE`) que ponía un filtro de
+   Gmail configurado aparte en la cuenta (patrón heredado de n8n) — ese
+   filtro no se podía confirmar que etiquetara también las respuestas dentro
+   de un hilo ya existente, así que se sacó esa dependencia: cualquier
+   mensaje que siga en INBOX se toma como no procesado, porque cada rama del
+   grafo lo saca de INBOX (o lo borra) al terminar.
 2. Por cada mensaje, corre el grafo (`app/graph.py`):
    - **Remitente interno** (`@everwear.com.ar`, no `rrhh@`) → responde
      recordatorio y **borra** el mensaje (irreversible).
@@ -96,9 +101,16 @@ Contenedor `vicki-mail`, puerto host `8089`. `/health` para chequear,
 - Nada de esto se probó contra el buzón real (sin credenciales ni acceso de
   red desde este entorno) — antes de producción, correr `/process_now`
   contra un mensaje de prueba y revisar los logs.
-- **`LABEL_QUEUE` / `LABEL_CV_PROCESADO`**: usá `GET /labels` para confirmar
-  que esos IDs corresponden a los labels correctos en el buzón real (no son
-  legibles solo mirando el JSON de n8n).
+- **`LABEL_CV_PROCESADO`**: usá `GET /labels` para confirmar que el ID
+  corresponde al label correcto en el buzón real (no es legible solo mirando
+  el JSON de n8n). `LABEL_QUEUE` ya no hace falta confirmarlo — quedó sin uso
+  en el descubrimiento de mensajes (ver arriba), solo se sigue removiendo por
+  las dudas en `nodes.py:_cerrar` si un mensaje todavía lo tuviera puesto de
+  cuando existía el filtro viejo.
+- **Filtro de Gmail viejo (label "cola")**: si sigue activo en la cuenta, no
+  rompe nada (el mensaje simplemente además tiene ese label, que `_cerrar` lo
+  saca igual), pero conviene desactivarlo o dejarlo — ya no es necesario para
+  que `vicki_mail` funcione.
 - **Archivo original del CV**: se sube a Drive (carpeta `DRIVE_FOLDER_CV_ARCHIVE`,
   "ceve" en el workflow original) después de persistir en Postgres/Qdrant —
   si falla la subida, solo se loguea, no bloquea la respuesta al candidato.
