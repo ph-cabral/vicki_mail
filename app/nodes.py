@@ -17,6 +17,7 @@ from app.constants import (
     DRIVE_FOLDER_READAI_SRC,
     DRIVE_TEMPLATE_CV_FILE_ID,
     DRIVE_TEMPLATE_CV_FILENAME,
+    LABEL_ALT_PROCESADO,
     LABEL_CV_PROCESADO,
     LABEL_QUEUE,
     SENDER_FIREFLIES,
@@ -29,7 +30,6 @@ from app.email_templates import (
     foto_no_procesada,
     postulacion_recibida,
     recordatorio_uso_interno,
-    solo_recepcion_cv,
     ya_registrado,
 )
 from app.extract import (
@@ -64,11 +64,23 @@ def _cerrar(state: EmailState, aplicar_label_procesado: bool = True) -> None:
         log.exception("no se pudo finalizar/etiquetar el mensaje %s", message_id)
 
 
-def _reenviar_a_rrhh(state: EmailState, asunto: str = "nos escribieron a seleccion") -> None:
-    """Ya no es para nuestro flujo automatico (hilo repetido, o la IA fallo
-    su unico intento): se reenvia tal cual a RRHH interno y se elimina el
-    original del buzon de seleccion (evita que siga dando vueltas / se
-    re-procese)."""
+def _reenviar_a_rrhh(state: EmailState, asunto: str = "nos escribieron a seleccion", eliminar: bool = True) -> None:
+    """Ya no es para nuestro flujo automatico (hilo repetido, mensaje sin CV,
+    o la IA fallo su unico intento): se reenvia tal cual a RRHH interno
+    (recursoshumanos@, `config.RRHH_INTERNAL_CONTACT`).
+
+    `eliminar` decide que pasa con el original en el buzon de seleccion
+    despues de reenviarlo:
+    - True (default): se borra (gmail trash) -- para casos sin CV adjunto,
+      donde el unico contenido de valor es el texto del mensaje, que ya viaja
+      completo en el reenvio.
+    - False: se etiqueta con `LABEL_ALT_PROCESADO` y se saca de INBOX (igual
+      que `_cerrar`, sin marcar "cv procesado") en vez de borrarse -- para
+      CVs con adjunto que no se pudieron procesar automaticamente: el
+      archivo original queda visible en el buzon (etiqueta) ademas de la
+      copia que le llega a RRHH, para no perder el adjunto si el reenvio
+      fallara o RRHH necesita volver a bajarlo (2026-07-20, pedido explicito:
+      "los que tenian cv" no se eliminan)."""
     message_id = state.get("message_id")
     if not message_id:
         return
@@ -92,6 +104,14 @@ def _reenviar_a_rrhh(state: EmailState, asunto: str = "nos escribieron a selecci
         )
     except Exception:
         log.exception("no se pudo reenviar a RRHH el mensaje %s", message_id)
+        return
+    if not eliminar:
+        try:
+            gmail_client.add_labels(message_id, [LABEL_ALT_PROCESADO])
+            gmail_client.remove_labels(message_id, [LABEL_QUEUE, "INBOX"])
+            gmail_client.mark_as_read(message_id)
+        except Exception:
+            log.exception("no se pudo etiquetar el mensaje %s tras reenviarlo a RRHH", message_id)
         return
     try:
         gmail_client.delete_message(message_id)
@@ -284,17 +304,18 @@ def reply_imagen_node(state: EmailState) -> dict:
 
 
 def reply_sin_cv_node(state: EmailState) -> dict:
-    if gmail_client.thread_has_sent_message(state.get("thread_id", ""), state.get("message_id", "")):
-        # ya le contestamos "esto es solo para CVs" antes en este hilo y
-        # volvio a escribir sin adjuntar CV: no es otro intento fallido, es
-        # una respuesta humana real (ej. propuesta comercial, pregunta) ->
-        # se reenvia a RRHH y se elimina, sin repetir la plantilla.
-        _reenviar_a_rrhh(state)
-        return {"accion_final": "reenviado_rrhh"}
-    subject, html = solo_recepcion_cv(state.get("from_name") or "")
-    gmail_client.send_email(state["from_address"], subject, html)
-    _cerrar(state)
-    return {"accion_final": "sin_cv"}
+    """Sin CV adjunto: se reenvia directo a RRHH interno (recursoshumanos@),
+    sin mandarle al remitente la plantilla automatica pidiendo el CV. No hay
+    adjunto que preservar, asi que el original se borra tras reenviarse
+    (`eliminar=True`, default de `_reenviar_a_rrhh`).
+
+    Cambiado 2026-07-20: antes el primer mensaje sin CV en un hilo recibia
+    la plantilla "esto es solo para CVs" y se archivaba, y recien se
+    reenviaba a RRHH si la persona volvia a escribir sin adjuntar (usando
+    `thread_has_sent_message`). Pedido explicito: todo mensaje sin CV va
+    directo a RRHH, sin ese paso intermedio."""
+    _reenviar_a_rrhh(state, asunto="nos escribieron a seleccion (sin CV adjunto)")
+    return {"accion_final": "reenviado_rrhh"}
 
 
 def delete_and_notice_node(state: EmailState) -> dict:
@@ -323,9 +344,11 @@ def ignore_node(state: EmailState) -> dict:
 def error_node(state: EmailState) -> dict:
     """Un solo intento por email: si la IA no devolvio un JSON parseable
     (ni Claude ni el fallback a OpenAI), no se reintenta en el proximo
-    poll -- se reenvia el CV a RRHH para carga manual y se cierra."""
+    poll -- se reenvia el CV a RRHH para carga manual. El mensaje SI tenia
+    un CV adjunto, asi que no se borra (`eliminar=False`): se etiqueta con
+    LABEL_ALT_PROCESADO y se saca de INBOX, ver `_reenviar_a_rrhh`."""
     log.error("fallo de analisis LLM en mensaje %s: %s", state.get("message_id"), state.get("perfil"))
-    _reenviar_a_rrhh(state, asunto="CV recibido, no se pudo procesar automaticamente")
+    _reenviar_a_rrhh(state, asunto="CV recibido, no se pudo procesar automaticamente", eliminar=False)
     return {"accion_final": "error_llm_reenviado"}
 
 

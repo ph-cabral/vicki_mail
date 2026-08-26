@@ -24,9 +24,19 @@ request/response como `vicki_chat`.
      cada integración, lo extrae, lo guarda en Postgres + Qdrant
      (colección `documentos`) y mueve el archivo a la carpeta "procesado".
    - **Resto** → se trata como postulación:
-     - sin adjunto válido → responde "esto es solo para CVs".
+     - sin adjunto válido → se reenvía directo a RRHH interno
+       (`recursoshumanos@`, ver `RRHH_INTERNAL_CONTACT`) y se borra el
+       original (no hay adjunto que preservar). No se le manda plantilla al
+       remitente (cambiado 2026-07-20; antes el primer mensaje sin CV en un
+       hilo recibía "esto es solo para CVs" y recién se reenviaba a RRHH si
+       la persona volvía a escribir sin adjuntar).
      - adjunto es imagen/escaneo (texto extraído casi vacío) → responde
        pidiendo Word/PDF real.
+     - CV válido pero la IA no pudo estructurarlo (Claude y el fallback a
+       OpenAI fallan, o el JSON viene con una forma inesperada) → se reenvía
+       el CV a RRHH para carga manual; el original **no se borra**, se
+       etiqueta con `LABEL_ALT_PROCESADO` y se saca de INBOX (sí tenía un
+       adjunto de valor, se conserva por las dudas).
      - CV válido → extrae texto → Claude estructura los datos → matchea
        contra `rag_system.candidato` (por DNI > email > teléfono > nombre
        normalizado) → upsert candidato + `documento_aprobado` → upsert en
@@ -75,11 +85,15 @@ Contenedor `vicki-mail`, puerto host `8089`. `/health` para chequear,
   siendo válidos, pero conviene confirmarlos (Gmail → Configuración →
   Etiquetas; Drive → abrir la carpeta → ID en la URL).
 - **`LABEL_ALT_PROCESADO`**: apareció en el JSON en una rama que no se pudo
-  identificar con certeza. No se usa por ahora.
+  identificar con certeza — desde 2026-07-20 se reusa para etiquetar CVs con
+  adjunto que la IA no pudo procesar (`nodes.py:error_node`), en vez de
+  borrarlos. Confirmar con `GET /labels` que el ID corresponde al label
+  correcto en el buzón real.
 - **Plantilla "solo se usa para CVs"** (`solo_recepcion_cv` en
   `app/email_templates.py`): el workflow n8n no tenía un nodo con este
-  texto exacto — se escribió nueva, mismo tono/firma que el resto. Revisar
-  el copy.
+  texto exacto. Desde 2026-07-20 ya no se usa (los mensajes sin CV se
+  reenvían directo a RRHH sin plantilla) — la función queda escrita por si
+  se necesita volver atrás.
 - **`Send email3`** ("Acabo de actualizar tus datos en la base") existe en
   el JSON original pero no se pudo determinar en qué rama se disparaba
   distinto de `Send email4`. Por ahora el flujo usa `Send email4`

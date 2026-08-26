@@ -15,9 +15,11 @@ LABEL_QUEUE = os.getenv("LABEL_QUEUE", "Label_4652258528252762123")
 # registrado, recordatorio a interno).
 LABEL_CV_PROCESADO = os.getenv("LABEL_CV_PROCESADO", "Label_3877397017358731180")
 
-# Label alternativo visto en una rama distinta del workflow original (nodo
-# "Agregar Etiqueta cv procesado8") -- no se pudo determinar con certeza a
-# que rama corresponde exactamente. Se deja disponible por si se necesita.
+# Label para CVs con adjunto que la IA no pudo procesar (nodes.py:error_node):
+# se reenvian a RRHH para carga manual, pero el original NO se borra -- se
+# etiqueta con esto y se saca de INBOX (2026-07-20, ver _reenviar_a_rrhh).
+# Originalmente visto en una rama del workflow n8n que no se pudo identificar
+# con certeza (nodo "Agregar Etiqueta cv procesado8") -- se reusa para este caso.
 LABEL_ALT_PROCESADO = os.getenv("LABEL_ALT_PROCESADO", "Label_642290056197378156")
 
 # Carpetas Drive donde Read AI / Fireflies dejan los resumenes de reunion.
