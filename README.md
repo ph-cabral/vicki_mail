@@ -45,6 +45,48 @@ request/response como `vicki_chat`.
 3. Al terminar, saca el mensaje de la cola (remueve label + INBOX) y lo
    marca como leído.
 
+## Archivo del CV (store local + Drive)
+
+Además de subirlo a Drive, cada CV se guarda en `CV_STORE_DIR`
+(`app/cv_store.py`), en `<hash[:2]>/<hash>/`:
+
+- `original.<ext>` — el adjunto tal cual llegó
+- `doc.pdf` — el original si ya era PDF, o el convertido con LibreOffice
+- `thumb.jpg` — primera página, 300px (`pdftoppm`, poppler-utils)
+
+El path se deriva de `hash_archivo` (UNIQUE en `documento_aprobado`), así que
+no se guarda ninguna ruta. En la base se marcan `drive_file_id`,
+`archivo_local`, `archivo_pdf` y `archivo_thumb` (columnas agregadas de forma
+idempotente al arrancar, `db.ensure_columnas_archivo`).
+
+Esto es lo que después muestra la barra de CVs del chat: `vicki_chat` monta el
+mismo volumen de solo lectura y sirve el PDF y la miniatura. Sin esto habría
+que pegarle a Drive en cada miniatura y en cada apertura.
+
+**En el server**: el volumen es `${CV_STORE_DIR:-/opt/vicki/cv_store}` y el
+contenedor corre como uid 1000, así que la carpeta tiene que existir y
+pertenecerle:
+
+```bash
+sudo mkdir -p /opt/vicki/cv_store && sudo chown 1000:1000 /opt/vicki/cv_store
+```
+
+### Backfill de los CVs históricos
+
+Los CVs viejos están en Drive pero sin vínculo con la base (el id de la subida
+se descartaba). `scripts/backfill_cv_drive.py` los reconstruye: baja cada
+archivo de la carpeta de archivo, le calcula el mismo sha256 que la ingesta y
+lo matchea contra `documento_aprobado`. Lo que matchea queda con archivo,
+miniatura y `drive_file_id`; lo que no, sale en un CSV para revisar a mano (no
+se inventa ninguna asociación: el nombre de archivo se repite demasiado).
+
+```bash
+docker compose exec vicki-mail python -m scripts.backfill_cv_drive --dry-run
+docker compose exec vicki-mail python -m scripts.backfill_cv_drive
+```
+
+Es idempotente y saltea lo que ya tiene archivo local (`--rehacer` lo fuerza).
+
 ## Setup
 
 ### 1. Credenciales Google (Gmail + Drive)

@@ -7,6 +7,12 @@ services:
     env_file: .env
     ports:
       - "8089:8000"
+    environment:
+      # Store de archivos de CV (original + PDF + miniatura). Mismo path host
+      # que monta chat-agent de solo lectura para servirlos al chat.
+      CV_STORE_DIR: /data/cv_store
+    volumes:
+      - ${CV_STORE_DIR:-/opt/vicki/cv_store}:/data/cv_store
 networks:
   ai-net:
     external: true

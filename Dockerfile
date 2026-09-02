@@ -9,14 +9,18 @@ WORKDIR /app
 # antiword: extracción de .doc viejo, contingencia si falla la conversión a PDF.
 # libreoffice-writer: convierte doc/docx a PDF (soffice --headless) para poder
 # mandarle el archivo entero a Claude/OpenAI igual que un PDF nativo.
+# poppler-utils: pdftoppm, miniatura de la primera página del CV (cv_store.py).
 RUN apt-get update && apt-get install -y --no-install-recommends \
-      tzdata curl antiword libreoffice-writer \
+      tzdata curl antiword libreoffice-writer poppler-utils \
     && rm -rf /var/lib/apt/lists/*
 
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 COPY app ./app
+# scripts sueltos que se corren a mano dentro del contenedor
+# (backfill del archivo de CVs desde Drive, alta de refresh_token)
+COPY scripts ./scripts
 
 RUN useradd --create-home --uid 1000 appuser
 USER appuser

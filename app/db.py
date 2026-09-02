@@ -193,6 +193,74 @@ def upsert_documento_cv(
     return dict(zip(cols, row))
 
 
+# ── archivo del CV (store local + Drive) ────────────────────────────────────
+
+# Columnas agregadas para poder mostrar el CV en el chat: hasta ahora el
+# archivo se subia a Drive y el id que devolvia la subida se descartaba, asi
+# que no habia forma de ir del candidato a su archivo. Se agregan de forma
+# idempotente al arrancar (main.lifespan) porque la tabla es preexistente y
+# no hay migraciones en este servicio.
+#   drive_file_id  -> respaldo/trazabilidad del archivado en Drive
+#   archivo_local  -> el original esta en CV_STORE_DIR (ver cv_store.py)
+#   archivo_pdf    -> hay doc.pdf (original PDF o convertido con LibreOffice)
+#   archivo_thumb  -> hay thumb.jpg (primera pagina)
+# La RUTA no se guarda: se deriva del hash_archivo, que ya es UNIQUE.
+_DDL_COLUMNAS_ARCHIVO = """
+ALTER TABLE rag_system.documento_aprobado
+  ADD COLUMN IF NOT EXISTS drive_file_id TEXT,
+  ADD COLUMN IF NOT EXISTS archivo_local BOOLEAN NOT NULL DEFAULT FALSE,
+  ADD COLUMN IF NOT EXISTS archivo_pdf   BOOLEAN NOT NULL DEFAULT FALSE,
+  ADD COLUMN IF NOT EXISTS archivo_thumb BOOLEAN NOT NULL DEFAULT FALSE;
+"""
+
+# La barra del chat pide el CV por candidato_id -> indice por (candidato_id,
+# tipo) para que traer "el ultimo CV de estos N candidatos" no escanee la
+# tabla. Parcial en tipo='CV': los documentos de reunion no se consultan asi.
+_DDL_INDICE_CANDIDATO = """
+CREATE INDEX IF NOT EXISTS documento_aprobado_candidato_cv_idx
+  ON rag_system.documento_aprobado (candidato_id, aprobado_at DESC)
+  WHERE tipo = 'CV';
+"""
+
+
+def ensure_columnas_archivo() -> None:
+    """Idempotente, corre en cada arranque. Si falla se loguea y sigue: la
+    ingesta tiene que funcionar igual aunque no se pueda tocar el schema."""
+    try:
+        with get_pool().connection() as conn:
+            conn.execute(_DDL_COLUMNAS_ARCHIVO)
+            conn.execute(_DDL_INDICE_CANDIDATO)
+            conn.commit()
+    except Exception:
+        log.exception("no se pudieron verificar las columnas de archivo en documento_aprobado")
+
+
+def marcar_archivo(hash_archivo: str, *, drive_file_id: str | None = None,
+                   local: bool | None = None, pdf: bool | None = None,
+                   thumb: bool | None = None) -> None:
+    """Actualiza solo los campos que vienen (COALESCE con el valor actual)."""
+    sql = """
+    UPDATE rag_system.documento_aprobado SET
+      drive_file_id = COALESCE(%(drive_file_id)s, drive_file_id),
+      archivo_local = COALESCE(%(local)s, archivo_local),
+      archivo_pdf   = COALESCE(%(pdf)s, archivo_pdf),
+      archivo_thumb = COALESCE(%(thumb)s, archivo_thumb)
+    WHERE hash_archivo = %(hash_archivo)s
+    """
+    try:
+        with get_pool().connection() as conn:
+            conn.execute(sql, {
+                "hash_archivo": hash_archivo,
+                "drive_file_id": drive_file_id,
+                "local": local,
+                "pdf": pdf,
+                "thumb": thumb,
+            })
+            conn.commit()
+    except Exception:
+        log.exception("no se pudo marcar el archivo del CV (hash=%s)", hash_archivo[:12])
+
+
 # ── documento_aprobado (notas de reunión: Fireflies / Read AI) ──────────────
 
 _INSERT_DOC_MEETING_SQL = """

@@ -7,7 +7,7 @@ download_attachments=True).
 import hashlib
 import logging
 
-from app import drive_client, gmail_client
+from app import cv_store, drive_client, gmail_client
 from app.config import config
 from app.constants import (
     DRIVE_FOLDER_CV_ARCHIVE,
@@ -25,7 +25,13 @@ from app.constants import (
     SENDER_READAI,
     SENDER_TRANSKRIPTOR,
 )
-from app.db import construir_texto_limpio, insert_documento_meeting, upsert_candidato, upsert_documento_cv
+from app.db import (
+    construir_texto_limpio,
+    insert_documento_meeting,
+    marcar_archivo,
+    upsert_candidato,
+    upsert_documento_cv,
+)
 from app.email_templates import (
     foto_no_procesada,
     postulacion_recibida,
@@ -263,8 +269,25 @@ def persist_cv_node(state: EmailState) -> dict:
     except Exception:
         log.exception("error persistiendo CV (candidato_id=%s)", candidato.get("id"))
 
+    # Copia local del archivo: original + PDF normalizado + miniatura de la
+    # primera pagina. Es lo que despues sirve la barra de CVs del chat, sin
+    # pegarle a Drive en cada miniatura. Va DESPUES del upsert porque marca
+    # columnas de la fila recien escrita.
     try:
-        drive_client.upload_file(cv["data"], cv["filename"], DRIVE_FOLDER_CV_ARCHIVE, cv["mime_type"])
+        para_ia = state.get("cv_para_ia") or {}
+        res = cv_store.guardar(
+            state["hash_archivo"], cv["data"], cv["mime_type"],
+            pdf_data=para_ia.get("data") if para_ia.get("mime_type") == "application/pdf" else None,
+        )
+        marcar_archivo(state["hash_archivo"], local=True, pdf=res["pdf"], thumb=res["thumb"])
+    except Exception:
+        log.exception("no se pudo guardar el CV en el store local (candidato_id=%s)", candidato.get("id"))
+
+    try:
+        subido = drive_client.upload_file(cv["data"], cv["filename"], DRIVE_FOLDER_CV_ARCHIVE, cv["mime_type"])
+        # el id de Drive antes se descartaba: sin el no habia forma de volver
+        # al archivo desde la base.
+        marcar_archivo(state["hash_archivo"], drive_file_id=subido.get("id"))
     except Exception:
         log.exception("no se pudo archivar el CV original en Drive (candidato_id=%s)", candidato.get("id"))
 

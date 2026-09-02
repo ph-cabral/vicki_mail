@@ -7,6 +7,7 @@ from fastapi import FastAPI
 from app import gmail_client
 from app.config import config
 from app.constants import LABEL_CV_PROCESADO, LABEL_QUEUE
+from app.db import ensure_columnas_archivo
 from app.graph import build_graph
 
 logging.basicConfig(level=logging.INFO)
@@ -57,6 +58,9 @@ async def lifespan(_app: FastAPI):
     global graph, scheduler
     graph = build_graph().compile()
     log.info("grafo compilado")
+
+    # columnas/indice para el archivo del CV (idempotente, ver db.py)
+    ensure_columnas_archivo()
 
     scheduler = AsyncIOScheduler(timezone=config.TZ)
     scheduler.add_job(
