@@ -8,7 +8,7 @@ Equivalente a los nodos n8n: "Read Ai"/"Fireflies" (list por carpeta),
 """
 import io
 import logging
-from functools import lru_cache
+import threading
 
 from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
@@ -23,17 +23,36 @@ SCOPES = ["https://www.googleapis.com/auth/drive"]
 DOCX_MIME = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
 
 
-@lru_cache(maxsize=1)
+_local = threading.local()
+
+
 def _service():
-    creds = Credentials(
-        token=None,
-        refresh_token=config.GOOGLE_REFRESH_TOKEN,
-        client_id=config.GOOGLE_CLIENT_ID,
-        client_secret=config.GOOGLE_CLIENT_SECRET,
-        token_uri="https://oauth2.googleapis.com/token",
-        scopes=SCOPES,
-    )
-    return build("drive", "v3", credentials=creds, cache_discovery=False)
+    """UN cliente de Drive POR HILO.
+
+    Antes era `@lru_cache(maxsize=1)`: un único objeto compartido. Sirve
+    mientras el servicio corre en un solo hilo (el scheduler), pero
+    googleapiclient usa httplib2, que NO es thread-safe: dos hilos escribiendo
+    en el mismo socket TLS mezclan las respuestas y revienta con
+    `ssl.SSLError: record layer failure` o, peor, corrupción de memoria
+    (`free(): corrupted unsorted chunks`). Pasó al bajar CVs en paralelo
+    (scripts/ingesta_cv_drive.py --workers 4).
+
+    Cada hilo arma su propia credencial: el refresh_token se puede usar en
+    paralelo, sólo se emiten access tokens distintos.
+    """
+    svc = getattr(_local, "svc", None)
+    if svc is None:
+        creds = Credentials(
+            token=None,
+            refresh_token=config.GOOGLE_REFRESH_TOKEN,
+            client_id=config.GOOGLE_CLIENT_ID,
+            client_secret=config.GOOGLE_CLIENT_SECRET,
+            token_uri="https://oauth2.googleapis.com/token",
+            scopes=SCOPES,
+        )
+        svc = build("drive", "v3", credentials=creds, cache_discovery=False)
+        _local.svc = svc
+    return svc
 
 
 def list_folder(folder_id: str) -> list[dict]:
@@ -53,7 +72,7 @@ def export_as_docx(file_id: str) -> bytes:
     downloader = MediaIoBaseDownload(buf, request)
     done = False
     while not done:
-        _status, done = downloader.next_chunk()
+        _status, done = downloader.next_chunk(num_retries=3)
     return buf.getvalue()
 
 
@@ -67,7 +86,7 @@ def download_file(file_id: str) -> bytes:
     downloader = MediaIoBaseDownload(buf, request)
     done = False
     while not done:
-        _status, done = downloader.next_chunk()
+        _status, done = downloader.next_chunk(num_retries=3)
     return buf.getvalue()
 
 
