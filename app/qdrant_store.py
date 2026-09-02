@@ -34,9 +34,21 @@ def _openai() -> OpenAI:
 
 
 def _qdrant() -> QdrantClient:
+    """Cliente Qdrant con timeout explícito.
+
+    El default de qdrant_client son 5 segundos, que alcanzan para el upsert de
+    UN CV (unos pocos chunks) pero no para escrituras en lote: reindexar la
+    colección entera manda cientos de vectores de 1536 floats por request y se
+    cortaba con `httpx.WriteTimeout` (y hasta `get_collections` daba ReadTimeout
+    con el servidor ocupado). Configurable por si el server queda cargado.
+    """
     global _qdrant_client
     if _qdrant_client is None:
-        _qdrant_client = QdrantClient(url=config.QDRANT_URL, api_key=config.QDRANT_API_KEY or None)
+        _qdrant_client = QdrantClient(
+            url=config.QDRANT_URL,
+            api_key=config.QDRANT_API_KEY or None,
+            timeout=config.QDRANT_TIMEOUT,
+        )
     return _qdrant_client
 
 

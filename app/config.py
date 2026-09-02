@@ -25,6 +25,9 @@ class Config:
     # ── Qdrant ───────────────────────────────────────────────────────────
     QDRANT_URL: str = os.getenv("QDRANT_URL", "http://n8n_qdrant:6333")
     QDRANT_API_KEY: str = os.getenv("QDRANT_API_KEY", "")
+    # 5s (el default de qdrant_client) se queda corto en escrituras en lote
+    # — ver qdrant_store._qdrant().
+    QDRANT_TIMEOUT: float = float(os.getenv("QDRANT_TIMEOUT", "60"))
     QDRANT_COLLECTION_CVS: str = os.getenv("QDRANT_COLLECTION_CVS", "cvs")
     QDRANT_COLLECTION_DOCS: str = os.getenv("QDRANT_COLLECTION_DOCS", "documentos")
 

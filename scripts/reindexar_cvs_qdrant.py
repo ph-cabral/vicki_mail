@@ -28,6 +28,7 @@ Uso (dentro del contenedor):
 import argparse
 import logging
 import sys
+import time
 
 from qdrant_client.http import models as qmodels
 
@@ -89,11 +90,41 @@ def hashes_en_qdrant(coleccion: str) -> set:
             return vistos
 
 
+def _upsert(puntos: list, coleccion: str, tam: int, intentos: int = 4) -> None:
+    """Escribe los puntos en tandas chicas, con reintentos y backoff.
+
+    Un vector de 1536 floats pesa ~30 KB en JSON: mandar 250 de una es un
+    request de varios MB que a Qdrant le puede tomar más que el timeout del
+    cliente (pasó: `httpx.WriteTimeout`). Se parte en tandas y cada tanda se
+    reintenta — un timeout puntual no puede tirar abajo una reindexación de
+    miles de chunks a la mitad.
+
+    wait=False: no se espera a que Qdrant termine de indexar cada tanda, sólo a
+    que la acepte. La búsqueda las ve unos segundos después; a cambio la
+    escritura no se frena esperando el índice.
+    """
+    for i in range(0, len(puntos), tam):
+        tanda = puntos[i:i + tam]
+        for intento in range(1, intentos + 1):
+            try:
+                _qdrant().upsert(collection_name=coleccion, points=tanda, wait=False)
+                break
+            except Exception as e:
+                if intento == intentos:
+                    raise
+                espera = 2 ** intento
+                log.warning("upsert falló (%s), reintento %d en %ds",
+                            type(e).__name__, intento, espera)
+                time.sleep(espera)
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--coleccion", default=config.QDRANT_COLLECTION_CVS)
     ap.add_argument("--lote", type=int, default=25,
-                    help="CVs por lote de embeddings/upsert")
+                    help="CVs por lote de embeddings")
+    ap.add_argument("--upsert-batch", type=int, default=64,
+                    help="puntos por request a Qdrant (bajalo si da timeout)")
     ap.add_argument("--limit", type=int, default=0, help="cortar después de N CVs")
     ap.add_argument("--dry-run", action="store_true",
                     help="cuenta CVs y chunks, no llama a OpenAI ni escribe")
@@ -108,6 +139,7 @@ def main() -> int:
     try:
         antes = client.count(args.coleccion, exact=True).count
     except Exception:
+        log.warning("no pude contar los puntos actuales (Qdrant lento); sigo igual")
         antes = 0
     log.info("colección %r: %d puntos antes", args.coleccion, antes)
 
@@ -141,7 +173,7 @@ def main() -> int:
                                           "chunk_index": idx}},
                 ))
                 i += 1
-        client.upsert(collection_name=args.coleccion, points=puntos)
+        _upsert(puntos, args.coleccion, args.upsert_batch)
         chunks_total += len(puntos)
         buffer.clear()
 
@@ -168,10 +200,13 @@ def main() -> int:
             log.info("%d CVs… %d chunks", total, chunks_total)
     _flush()
 
-    try:
-        despues = client.count(args.coleccion, exact=True).count
-    except Exception:
-        despues = -1
+    despues = antes  # en dry-run no se escribió nada: el conteo no cambia
+    if not args.dry_run:
+        try:
+            despues = client.count(args.coleccion, exact=True).count
+        except Exception:
+            log.exception("no pude contar los puntos después de indexar")
+            despues = -1
     log.info(
         "listo%s: %d CVs indexados (%d chunks), %d salteados, %d sin texto. "
         "Puntos en %r: %d → %d",
