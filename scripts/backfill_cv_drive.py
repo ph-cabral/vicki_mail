@@ -112,8 +112,13 @@ def main() -> int:
     docs = indice_por_hash()
     log.info("%d CVs en la base para matchear", len(docs))
 
-    total = matcheados = guardados = saltados = 0
+    total = matcheados = guardados = saltados = duplicados = 0
     sin_match = []
+    # hashes ya escritos en esta corrida. El mismo CV puede estar varias veces en
+    # Drive (se re-subio, o entro por dos mails); el store es por hash, asi que
+    # reprocesarlo seria volver a pagar LibreOffice + pdftoppm para escribir
+    # exactamente el mismo archivo.
+    vistos: set = set()
 
     for f in listar_carpeta(args.folder):
         total += 1
@@ -135,6 +140,10 @@ def main() -> int:
             continue
 
         matcheados += 1
+        if h in vistos:
+            duplicados += 1
+            continue
+        vistos.add(h)
         if doc["archivo_local"] and not args.rehacer:
             saltados += 1
         else:
@@ -149,10 +158,16 @@ def main() -> int:
         w.writerow(["drive_file_id", "nombre", "tamanio", "motivo"])
         w.writerows(sin_match)
 
+    con_archivo = {h for h, d in docs.items() if d["archivo_local"]} | vistos
     log.info(
-        "listo: %d archivos en Drive, %d con match en la base, %d guardados, "
-        "%d ya estaban, %d sin match (ver %s)",
-        total, matcheados, guardados, saltados, len(sin_match), REPORTE,
+        "listo: %d archivos en Drive, %d con match (%d CVs distintos, %d repetidos "
+        "en Drive), %d guardados, %d ya estaban, %d sin match (ver %s)",
+        total, matcheados, len(vistos), duplicados, guardados, saltados,
+        len(sin_match), REPORTE,
+    )
+    log.info(
+        "cobertura: %d de %d CVs de la base con archivo, %d sin archivo en Drive",
+        len(con_archivo), len(docs), len(docs) - len(con_archivo),
     )
     return 0
 

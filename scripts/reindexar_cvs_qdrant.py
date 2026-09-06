@@ -1,7 +1,8 @@
 """Reindexa a Qdrant los CVs que YA están en Postgres.
 
 Para qué: el chat de Vicki no encontraba a nadie porque busca en Qdrant, y la
-colección 'cvs' estaba vacía (o se perdió). Pero el texto ya procesado
+colección de postulantes estaba vacía (Qdrant venía caído por
+`Too many open files`, ver README/memoria). Pero el texto ya procesado
 (`texto_limpio`) y el candidato asociado están en
 `rag_system.documento_aprobado` — 813 CVs. O sea: no hace falta volver a bajar
 nada de Drive ni volver a pasar los CVs por el LLM. Sólo hay que volver a
@@ -120,7 +121,7 @@ def _upsert(puntos: list, coleccion: str, tam: int, intentos: int = 4) -> None:
 
 def main() -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--coleccion", default=config.QDRANT_COLLECTION_CVS)
+    ap.add_argument("--coleccion", default=config.QDRANT_COLLECTION_POSTULANTES)
     ap.add_argument("--lote", type=int, default=25,
                     help="CVs por lote de embeddings")
     ap.add_argument("--upsert-batch", type=int, default=64,

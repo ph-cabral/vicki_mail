@@ -255,7 +255,7 @@ def persist_cv_node(state: EmailState) -> dict:
             accion=candidato["accion"],
         )
         upsert_documento(
-            collection=config.QDRANT_COLLECTION_CVS,
+            collection=config.QDRANT_COLLECTION_POSTULANTES,
             texto=state["texto_limpio"],
             hash_archivo=state["hash_archivo"],
             metadata={

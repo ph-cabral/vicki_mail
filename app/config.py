@@ -28,7 +28,11 @@ class Config:
     # 5s (el default de qdrant_client) se queda corto en escrituras en lote
     # — ver qdrant_store._qdrant().
     QDRANT_TIMEOUT: float = float(os.getenv("QDRANT_TIMEOUT", "60"))
-    QDRANT_COLLECTION_CVS: str = os.getenv("QDRANT_COLLECTION_CVS", "cvs")
+    # Datos del POSTULANTE extraídos del CV (texto_limpio: perfil, experiencia,
+    # formación). Es lo que busca el chat. Se llamaba 'cvs', pero el nombre
+    # confundía: acá no hay CVs, hay datos sacados de los CVs. El nombre 'cvs'
+    # queda reservado para una colección del texto crudo del archivo.
+    QDRANT_COLLECTION_POSTULANTES: str = os.getenv("QDRANT_COLLECTION_POSTULANTES", "postulantes")
     QDRANT_COLLECTION_DOCS: str = os.getenv("QDRANT_COLLECTION_DOCS", "documentos")
 
     # ── Polling (cron, horario laboral -- ver TZ mas abajo) ────────────────

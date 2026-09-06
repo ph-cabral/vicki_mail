@@ -14,7 +14,7 @@ se pueda desincronizar:
     Drive → texto (PDF nativo o LibreOffice) → perfil (LLM) → texto_limpio
           → rag_system.candidato (upsert por nombre/email)
           → rag_system.documento_aprobado (upsert por hash)
-          → Qdrant colección 'cvs'   ← esto es lo que busca el chat
+          → Qdrant colección 'postulantes'  ← esto es lo que busca el chat
           → cv_store local (original + PDF + miniatura) + drive_file_id
 
 Idempotente: la lista de hashes ya cargados se trae en UNA consulta y los
@@ -156,7 +156,7 @@ def procesar(f: dict, dry_run: bool) -> tuple[str, str]:
     # Lo que hace que el chat lo encuentre. Si esto falla, el CV queda en la
     # base pero invisible para la búsqueda → se reporta como error, no se traga.
     upsert_documento(
-        collection=config.QDRANT_COLLECTION_CVS,
+        collection=config.QDRANT_COLLECTION_POSTULANTES,
         texto=texto_limpio,
         hash_archivo=h,
         metadata={
