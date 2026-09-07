@@ -87,6 +87,33 @@ docker compose exec vicki-mail python -m scripts.backfill_cv_drive
 
 Es idempotente y saltea lo que ya tiene archivo local (`--rehacer` lo fuerza).
 
+## Backlog de mails etiquetados (sin responderle a nadie)
+
+`scripts/procesar_label_gmail.py` procesa los mails que quedaron acumulados en
+un label de Gmail de antes de que existiera este flujo. Corre el mismo pipeline
+que la ingesta por mail, pero **no manda ningún mail**: ni respuesta al
+candidato, ni reenvío a RRHH (`app.email_templates` ni se importa). Tampoco
+sube nada a Drive: el archivo queda en el store local y en el mail original.
+
+```bash
+docker compose exec vicki-mail python -m scripts.procesar_label_gmail --dry-run --limit 10
+docker compose exec vicki-mail python -m scripts.procesar_label_gmail
+```
+
+- CV nuevo → se carga entero y el mail pasa al label destino.
+- CV que ya estaba en la base → **no** se vuelve a llamar al LLM: se corrobora
+  que esté completo (candidato, `texto_limpio`, vectores en Qdrant, original +
+  PDF + miniatura **en el disco**, no sólo el flag de la base), se completa lo
+  que falte y el mail pasa igual al label destino.
+- Foto/escaneo, mail sin adjunto válido y falla del LLM → **no se tocan**:
+  quedan con el label de origen y salen en el CSV del reporte
+  (`LABEL_BACKLOG_REPORTE`, default `/tmp/procesar_label_gmail.csv`).
+
+Los labels se pasan por nombre tal como se los ve en Gmail
+(`--origen seleccion-y-reclutamiento-cv-no-procesado --destino cv-procesados`,
+o `LABEL_BACKLOG_ORIGEN` / `LABEL_BACKLOG_DESTINO`); el ID interno lo resuelve
+`gmail_client.label_id_por_nombre`. El label destino tiene que existir.
+
 ## Setup
 
 ### 1. Credenciales Google (Gmail + Drive)

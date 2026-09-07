@@ -103,6 +103,41 @@ def ensure_collection(collection: str) -> None:
         log.exception("no se pudo verificar/crear la colección '%s' (¿ya existe con otra config?)", collection)
 
 
+def hashes_indexados(collection: str, hashes: list[str]) -> set[str]:
+    """De una lista de hashes, cuáles ya tienen vectores en la colección.
+
+    Va por `retrieve` de los IDs de punto (que son determinísticos:
+    uuid5("hash:0")), NO por `scroll` con filtro por payload: retrieve es una
+    búsqueda por clave de todos los IDs en UNA sola llamada, mientras que
+    filtrar por `metadata.hash_archivo` sin índice de payload recorre la
+    colección entera y habría que repetirlo por cada CV.
+
+    Chequea sólo el chunk 0: si existe, el documento se indexó (el upsert
+    escribe todos sus chunks de una)."""
+    if not hashes:
+        return set()
+    por_punto = {_point_id(h, 0): h for h in dict.fromkeys(hashes)}
+    encontrados: set[str] = set()
+    ids = list(por_punto)
+    # en tandas, para no mandar un payload gigante en una sola request
+    for i in range(0, len(ids), 512):
+        try:
+            puntos = _qdrant().retrieve(
+                collection_name=collection, ids=ids[i:i + 512],
+                with_payload=False, with_vectors=False,
+            )
+        except Exception:
+            # colección inexistente o Qdrant caído: se asume que no hay nada
+            # indexado — el llamador lo (re)indexa, que es idempotente
+            log.exception("no se pudo consultar '%s' por hashes indexados", collection)
+            return encontrados
+        for p in puntos:
+            h = por_punto.get(str(p.id))
+            if h:
+                encontrados.add(h)
+    return encontrados
+
+
 def upsert_documento(collection: str, texto: str, hash_archivo: str, metadata: dict) -> int:
     chunks = chunk_text(texto)
     if not chunks:

@@ -10,6 +10,8 @@ Archivos" (get + adjuntos), "Marcar Como Leido", "Agregar/Remove label",
 import base64
 import email.utils
 import logging
+import re
+import unicodedata
 from email.mime.application import MIMEApplication
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
@@ -23,6 +25,13 @@ from app.config import config
 log = logging.getLogger("gmail")
 
 SCOPES = ["https://www.googleapis.com/auth/gmail.modify"]
+
+# Labels que Gmail crea solo: su ID ES el nombre, no hay que resolverlos.
+LABELS_SISTEMA = {
+    "INBOX", "SENT", "DRAFT", "TRASH", "SPAM", "UNREAD", "STARRED", "IMPORTANT",
+    "CHAT", "CATEGORY_PERSONAL", "CATEGORY_SOCIAL", "CATEGORY_PROMOTIONS",
+    "CATEGORY_UPDATES", "CATEGORY_FORUMS",
+}
 
 
 @lru_cache(maxsize=1)
@@ -94,6 +103,54 @@ def list_queue(label_id: str, max_results: int = 5) -> list[str]:
         userId="me", labelIds=[label_id], maxResults=max_results
     ).execute()
     return [m["id"] for m in resp.get("messages", [])]
+
+
+def _normalizar_label(nombre: str) -> str:
+    """'Seleccion y Reclutamiento/CV no procesado' -> 'seleccion-y-reclutamiento-cv-no-procesado'.
+
+    Es la misma forma en que Gmail escribe el label en la barra de busqueda
+    (`label:...`): minusculas, sin acentos, y espacios y barras de anidado como
+    guiones. Sirve para aceptar el label tal como se lo copia de la UI, sin
+    tener que averiguar su ID interno (Label_1234...)."""
+    texto = unicodedata.normalize("NFD", nombre or "")
+    texto = "".join(c for c in texto if unicodedata.category(c) != "Mn").lower()
+    return re.sub(r"-+", "-", re.sub(r"[\s/_]+", "-", texto)).strip("-")
+
+
+def label_id_por_nombre(nombre: str) -> str | None:
+    """ID interno del label a partir de su nombre visible (o de la forma
+    'label:...' de la busqueda). Si ya viene un ID (Label_..., INBOX, UNREAD) se
+    devuelve tal cual. None si no hay ningun label que matchee."""
+    if not nombre:
+        return None
+    if nombre.startswith("Label_") or nombre in LABELS_SISTEMA:
+        return nombre
+    buscado = _normalizar_label(nombre.removeprefix("label:"))
+    for l in list_labels():
+        if _normalizar_label(l["name"]) == buscado:
+            return l["id"]
+    return None
+
+
+def iter_messages_por_label(label_id: str, page_size: int = 500):
+    """IDs de TODOS los mensajes con un label, paginando (la API devuelve como
+    maximo 500 por pagina). Es un generador: no arma la lista entera en memoria
+    y permite cortar antes (--limit).
+
+    Filtra del lado del servidor por labelIds y no por query de texto: Gmail
+    resuelve el label por indice, no hay que traer y descartar mensajes."""
+    svc = _service()
+    page_token = None
+    while True:
+        resp = svc.users().messages().list(
+            userId="me", labelIds=[label_id],
+            maxResults=min(page_size, 500), pageToken=page_token,
+        ).execute()
+        for m in resp.get("messages", []) or []:
+            yield m["id"]
+        page_token = resp.get("nextPageToken")
+        if not page_token:
+            return
 
 
 def list_inbox(max_results: int = 5) -> list[str]:
