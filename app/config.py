@@ -17,6 +17,12 @@ class Config:
 
     # ── LLM ──────────────────────────────────────────────────────────────
     ANTHROPIC_KEY: str = os.getenv("ANTHROPIC_KEY", "")
+    # Cuentas de respaldo de Anthropic: cuando una se queda sin créditos se pasa
+    # a la siguiente ANTES de caer al fallback de OpenAI (ver llm.analizar_cv).
+    # ANTHROPIC_KEY_2 es el atajo para el caso de dos cuentas; ANTHROPIC_KEYS
+    # acepta varias separadas por coma si algún día hay más.
+    ANTHROPIC_KEY_2: str = os.getenv("ANTHROPIC_KEY_2", "")
+    ANTHROPIC_KEYS: str = os.getenv("ANTHROPIC_KEYS", "")
     ANTHROPIC_MODEL: str = os.getenv("ANTHROPIC_MODEL", "claude-haiku-4-5-20251001")
     OPENAI_API_KEY: str = os.getenv("OPENAI_API_KEY", "")
     OPENAI_MODEL: str = os.getenv("OPENAI_MODEL", "gpt-4.1-mini")
@@ -47,6 +53,19 @@ class Config:
     INTERNAL_DOMAIN: str = os.getenv("INTERNAL_DOMAIN", "everwear.com.ar")
 
     TZ: str = os.getenv("TZ", "America/Argentina/Buenos_Aires")
+
+    @property
+    def anthropic_keys(self) -> list[str]:
+        """Las cuentas de Anthropic a probar, en orden y sin repetidas.
+        Vacía si no hay ninguna configurada (ahí se va derecho a OpenAI)."""
+        crudas = [self.ANTHROPIC_KEY, self.ANTHROPIC_KEY_2, *self.ANTHROPIC_KEYS.split(",")]
+        vistas: set[str] = set()
+        orden: list[str] = []
+        for k in (x.strip() for x in crudas):
+            if k and k not in vistas:
+                vistas.add(k)
+                orden.append(k)
+        return orden
 
 
 config = Config()

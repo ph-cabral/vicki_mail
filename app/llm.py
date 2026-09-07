@@ -20,15 +20,32 @@ from app.config import config
 
 log = logging.getLogger("llm")
 
-_client: Anthropic | None = None
+# Un cliente por cuenta de Anthropic (crearlo es barato pero no gratis, y en
+# la ingesta en lote se pasa por acá una vez por CV).
+_clients: dict[str, Anthropic] = {}
 _openai_client: OpenAI | None = None
 
+# Cuentas que ya devolvieron "credit balance is too low" en este proceso. Sin
+# esto, cada CV siguiente vuelve a pagar el viaje de ida y vuelta a una cuenta
+# que ya sabemos que está seca: en una corrida de miles de mails son miles de
+# llamadas al pedo. Es un set de Python (add/in son atómicos), no hace falta
+# lock aunque la ingesta corra con varios hilos.
+_sin_credito_ya: set[str] = set()
 
-def _get_client() -> Anthropic:
-    global _client
-    if _client is None:
-        _client = Anthropic(api_key=config.ANTHROPIC_KEY)
-    return _client
+
+def _get_client(api_key: str) -> Anthropic:
+    cliente = _clients.get(api_key)
+    if cliente is None:
+        cliente = _clients[api_key] = Anthropic(api_key=api_key)
+    return cliente
+
+
+def _es_falta_de_credito(e: Exception) -> bool:
+    """Distingue "esta cuenta se quedó sin plata" de un error pasajero (un
+    timeout, un 529). Solo el primero justifica descartar la cuenta para el
+    resto del proceso; lo otro puede andar en el CV siguiente."""
+    msg = str(e).lower()
+    return "credit balance" in msg or "billing" in msg
 
 
 def _get_openai_client() -> OpenAI:
@@ -81,8 +98,8 @@ def _es_pdf(cv_adjunto: dict) -> bool:
     return (cv_adjunto or {}).get("mime_type") == "application/pdf"
 
 
-def _analizar_cv_claude(cv_adjunto: dict, texto_cv: str) -> str:
-    client = _get_client()
+def _analizar_cv_claude(cv_adjunto: dict, texto_cv: str, api_key: str) -> str:
+    client = _get_client(api_key)
     if _es_pdf(cv_adjunto):
         content = [
             {
@@ -132,17 +149,38 @@ def _analizar_cv_openai(cv_adjunto: dict, texto_cv: str) -> str:
 
 
 def analizar_cv(cv_adjunto: dict, texto_cv: str) -> dict:
-    """Un solo intento por email: Claude, y si falla, un unico fallback a
-    OpenAI. Si ese tambien falla (o el JSON no parsea), se devuelve
-    {"error": ...} en vez de reintentar -- el llamador (nodes.py) cierra el
-    mensaje en el primer fallo, no lo vuelve a poner en cola.
+    """Un solo intento por email: se prueban las cuentas de Anthropic en orden
+    (config.anthropic_keys) y, si ninguna responde, un unico fallback a OpenAI.
+    Si ese tambien falla (o el JSON no parsea), se devuelve {"error": ...} en
+    vez de reintentar -- el llamador (nodes.py) cierra el mensaje en el primer
+    fallo, no lo vuelve a poner en cola.
+
+    Varias cuentas de Anthropic: cuando la primera se queda sin creditos se
+    sigue con la segunda en vez de degradar todo el lote al modelo de OpenAI.
+    Una cuenta que contesta "credit balance is too low" se descarta para lo que
+    queda del proceso (_sin_credito_ya), asi el resto de los CVs no vuelve a
+    pagar ese viaje.
 
     Si el adjunto es PDF, se manda el archivo entero (cv_adjunto["data"]);
     para el resto de formatos se manda texto_cv (ya extraido localmente)."""
-    try:
-        raw = _analizar_cv_claude(cv_adjunto, texto_cv)
-    except Exception as e:
-        log.warning("Claude falló (¿sin créditos/tokens?), fallback a OpenAI: %s", e)
+    raw = None
+    ultimo_error: Exception | None = None
+    for n, api_key in enumerate(config.anthropic_keys, start=1):
+        if api_key in _sin_credito_ya:
+            continue
+        try:
+            raw = _analizar_cv_claude(cv_adjunto, texto_cv, api_key)
+            break
+        except Exception as e:
+            ultimo_error = e
+            if _es_falta_de_credito(e):
+                _sin_credito_ya.add(api_key)
+                log.warning("cuenta Anthropic #%d sin créditos, se descarta por el resto de la corrida", n)
+            else:
+                log.warning("cuenta Anthropic #%d falló: %s", n, e)
+
+    if raw is None:
+        log.warning("ninguna cuenta de Anthropic respondió (%s), fallback a OpenAI", ultimo_error)
         try:
             raw = _analizar_cv_openai(cv_adjunto, texto_cv)
         except Exception as e2:
