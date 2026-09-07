@@ -48,6 +48,7 @@ origen, y el hash de archivo es UNIQUE en la base.
 """
 import argparse
 import csv
+import json
 import logging
 import os
 import sys
@@ -150,9 +151,19 @@ def _texto_y_pdf(data: bytes, mime: str, filename: str) -> tuple[str, bytes | No
     if ext:
         pdf = convertir_a_pdf(data, ext)
         if pdf:
-            return extraer_texto("application/pdf", pdf), pdf
+            return _sin_nul(extraer_texto("application/pdf", pdf)), pdf
         log.warning("conversión a PDF falló para %s, sigo con texto local", filename)
-    return extraer_texto(mime, data), (data if mime == "application/pdf" else None)
+    return _sin_nul(extraer_texto(mime, data)), (data if mime == "application/pdf" else None)
+
+
+def _sin_nul(texto: str) -> str:
+    """Saca los bytes NUL (0x00) del texto.
+
+    Postgres no los acepta en campos `text` ni en `jsonb` (`PostgreSQL text
+    fields cannot contain NUL (0x00) bytes`) y hay PDFs mal generados de los que
+    pdfplumber los saca. Sin esto, el CV se pierde en el INSERT después de haber
+    pagado la llamada al LLM."""
+    return texto.replace("\x00", "") if texto else texto
 
 
 def _guardar_archivo(h: str, data: bytes, mime: str, pdf: bytes | None) -> None:
@@ -260,6 +271,9 @@ def procesar(message_id: str, args, docs: dict, indexados: set) -> tuple[str, st
     )
     if perfil.get("error"):
         return "error_llm", str(perfil.get("detail"))[:200]
+    # el perfil va a una columna jsonb, que tampoco admite \u0000: el LLM
+    # devuelve fragmentos del texto del CV y puede arrastrarlos
+    perfil = json.loads(json.dumps(perfil).replace("\\u0000", ""))
     try:
         texto_limpio = construir_texto_limpio(perfil)
     except Exception as e:
