@@ -89,6 +89,14 @@ REPORTE = os.getenv("LABEL_BACKLOG_REPORTE", "/tmp/procesar_label_gmail.csv")
 _gmail_lock = threading.Lock()
 _lock = threading.Lock()
 
+# hash → de qué mail salió. El mismo CV entra varias veces (la persona lo manda
+# dos veces, o reenvía el hilo): sin esto, cada copia paga de nuevo el LLM y los
+# embeddings para escribir exactamente lo mismo. Los repetidos se mueven al
+# label destino igual, pero sin trabajo. Si dos copias caen en el mismo instante
+# en dos workers distintos, la segunda se puede colar y pagarse dos veces —
+# corta la enorme mayoría, no pretende ser un lock.
+_hechos: dict[str, str] = {}
+
 
 def _g(fn, *args, **kwargs):
     with _gmail_lock:
@@ -189,9 +197,16 @@ def _indexar(h: str, texto: str, doc: dict) -> None:
 
 # ── un mensaje ──────────────────────────────────────────────────────────────
 
+def _ok(h: str, filename: str, estado: str, detalle: str) -> tuple[str, str]:
+    """Marca el hash como ya resuelto en esta corrida y devuelve el resultado."""
+    with _lock:
+        _hechos[h] = filename
+    return estado, detalle
+
+
 def procesar(message_id: str, args, docs: dict, indexados: set) -> tuple[str, str]:
-    """(estado, detalle). Estados: nuevo | completado | ya_estaba | sin_cv |
-    imagen | error_llm."""
+    """(estado, detalle). Estados: nuevo | completado | ya_estaba | duplicado |
+    sin_cv | imagen | error_llm."""
     msg = _g(gmail_client.get_message, message_id, download_attachments=True)
     quien = msg.get("from_address") or "?"
 
@@ -201,6 +216,12 @@ def procesar(message_id: str, args, docs: dict, indexados: set) -> tuple[str, st
 
     data, mime, filename = cv["data"], cv["mime_type"], cv.get("filename") or "cv.pdf"
     h = calcular_hash(data)
+    with _lock:
+        ya = _hechos.get(h)
+    if ya is not None:
+        # el mismo archivo ya se resolvió en esta corrida (otro mail lo traía):
+        # no se vuelve a extraer, ni a analizar, ni a indexar
+        return "duplicado", f"{filename} — mismo CV que «{ya}»"
     doc = docs.get(h)
 
     # ── ya estaba en la base: no se paga el LLM, sólo se completa lo que falte
@@ -211,9 +232,9 @@ def procesar(message_id: str, args, docs: dict, indexados: set) -> tuple[str, st
         if _falta_archivo(h, doc, mime):
             faltantes.append("archivo")
         if not faltantes:
-            return "ya_estaba", f"{filename} — {h[:12]}"
+            return _ok(h, filename, "ya_estaba", f"{filename} — {h[:12]}")
         if args.dry_run:
-            return "completado", f"[dry-run] falta {'+'.join(faltantes)} — {filename}"
+            return _ok(h, filename, "completado", f"[dry-run] falta {'+'.join(faltantes)} — {filename}")
         if "archivo" in faltantes:
             _, pdf = _texto_y_pdf(data, mime, filename)
             _guardar_archivo(h, data, mime, pdf)
@@ -223,7 +244,7 @@ def procesar(message_id: str, args, docs: dict, indexados: set) -> tuple[str, st
                 _indexar(h, texto, doc)
             else:
                 faltantes.append("sin texto_limpio en la base")
-        return "completado", f"{filename} — se completó {'+'.join(faltantes)}"
+        return _ok(h, filename, "completado", f"{filename} — se completó {'+'.join(faltantes)}")
 
     # ── CV nuevo (o fila incompleta: sin candidato o sin texto) → pipeline entero
     texto, pdf = _texto_y_pdf(data, mime, filename)
@@ -247,7 +268,7 @@ def procesar(message_id: str, args, docs: dict, indexados: set) -> tuple[str, st
     dp = perfil.get("datos_personales", {}) or {}
     persona = f"{dp.get('nombre', '')} {dp.get('apellido', '')} <{dp.get('email', '')}>".strip()
     if args.dry_run:
-        return "nuevo", f"[dry-run] {persona} — {len(texto)} chars"
+        return _ok(h, filename, "nuevo", f"[dry-run] {persona} — {len(texto)} chars")
 
     candidato = upsert_candidato(perfil)
     upsert_documento_cv(
@@ -267,7 +288,7 @@ def procesar(message_id: str, args, docs: dict, indexados: set) -> tuple[str, st
         "apellido": candidato.get("apellido"), "email": candidato.get("email"),
     })
     _guardar_archivo(h, data, mime, pdf)
-    return "nuevo", persona
+    return _ok(h, filename, "nuevo", persona)
 
 
 def mover(message_id: str, destino: str, origen: str) -> None:
@@ -283,7 +304,7 @@ def mover(message_id: str, destino: str, origen: str) -> None:
 
 # ── main ────────────────────────────────────────────────────────────────────
 
-MUEVEN = {"nuevo", "completado", "ya_estaba"}
+MUEVEN = {"nuevo", "completado", "ya_estaba", "duplicado"}
 
 
 def main() -> int:
