@@ -32,7 +32,7 @@ def _route_texto(state: EmailState) -> str:
 
 
 def _route_analisis(state: EmailState) -> str:
-    return state["route"]  # error_llm | ok
+    return state["route"]  # error_llm | imagen | ok
 
 
 def _route_match(state: EmailState) -> str:
@@ -79,6 +79,10 @@ def build_graph() -> StateGraph:
 
     builder.add_conditional_edges("analyze_cv", _route_analisis, {
         "error_llm": "error",
+        # el adjunto se pudo leer pero el modelo no encontro a ninguna persona
+        # (una foto que era la firma del mail, una hoja ilegible): mismo
+        # tratamiento que un escaneo, se le pide el CV en texto
+        "imagen": "reply_imagen",
         "ok": "match_candidato",
     })
 

@@ -42,12 +42,14 @@ from app.extract import (
     EXTENSION_POR_MIME_CONVERTIBLE,
     calcular_hash,
     convertir_a_pdf,
+    es_imagen,
     es_imagen_o_escaneo,
     extraer_texto,
     filtrar_adjunto_cv,
+    imagen_a_pdf,
 )
 from app.graph_state import EmailState
-from app.llm import analizar_cv
+from app.llm import analizar_cv, perfil_sin_persona
 from app.qdrant_store import upsert_documento
 
 log = logging.getLogger("nodes")
@@ -187,6 +189,22 @@ def extract_text_node(state: EmailState) -> dict:
     data = cv["data"]
     hash_archivo = calcular_hash(data)
 
+    if es_imagen(mime_type):
+        # foto del CV: no hay texto que extraer. Se pasa a PDF (img2pdf, sin
+        # recomprimir) y se le manda entera al modelo, que la lee con vision.
+        # Si no se pudo armar el PDF, se trata como antes: se le pide al
+        # candidato que lo reenvie en texto.
+        pdf_bytes = imagen_a_pdf(data)
+        if not pdf_bytes:
+            return {"route": "imagen", "hash_archivo": hash_archivo}
+        return {
+            "route": "texto_ok",
+            "texto_cv": "",
+            "hash_archivo": hash_archivo,
+            "cv_para_ia": {"mime_type": "application/pdf", "data": pdf_bytes,
+                           "filename": cv.get("filename", "cv.pdf")},
+        }
+
     extension = EXTENSION_POR_MIME_CONVERTIBLE.get(mime_type)
     if extension:
         pdf_bytes = convertir_a_pdf(data, extension)
@@ -212,6 +230,13 @@ def analyze_cv_node(state: EmailState) -> dict:
     perfil = analizar_cv(state.get("cv_para_ia") or state["cv_adjunto"], state["texto_cv"])
     if perfil.get("error"):
         return {"route": "error_llm", "perfil": perfil}
+    if perfil_sin_persona(perfil):
+        # el modelo no identifico a nadie en el archivo (una foto que result
+        # ser la firma del mail, una hoja ilegible). Cargarlo dejaria un
+        # candidato sin nombre en la base y en la shortlist: se trata igual
+        # que una imagen ilegible y se le pide el CV en texto.
+        log.info("el LLM no saco ningun dato del adjunto, se trata como imagen ilegible")
+        return {"route": "imagen"}
     try:
         texto_limpio = construir_texto_limpio(perfil)
     except Exception as e:

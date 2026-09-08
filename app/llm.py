@@ -87,6 +87,19 @@ Devuelve SOLO el JSON válido, sin envolverlo en comillas, sin escapar caractere
 El JSON debe ser válido y parseable directamente."""
 
 
+def perfil_sin_persona(perfil: dict) -> bool:
+    """True si el LLM devolvio el esquema pero sin identificar a nadie.
+
+    Hace falta desde que entran fotos como CV: si lo que se mando era la firma
+    del mail, un logo o una hoja ilegible, el modelo igual contesta el JSON
+    completo con todo en null. Sin este corte, cada uno de esos se convierte en
+    un candidato sin nombre que despues aparece en la shortlist del chat."""
+    dp = perfil.get("datos_personales") or {}
+    if any(str(dp.get(k) or "").strip() for k in ("nombre", "apellido", "email", "telefono", "dni")):
+        return False
+    return not (perfil.get("experiencia_laboral") or perfil.get("formacion_academica"))
+
+
 def _clean_json(raw: str) -> str:
     raw = raw.strip()
     raw = re.sub(r"^```json\s*", "", raw, flags=re.IGNORECASE)

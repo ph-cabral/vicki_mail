@@ -56,11 +56,44 @@ EXTENSIONES_PERMITIDAS = [
     "text/plain",
 ]
 
+# Fotos del CV. No se les extrae texto: se pasan a PDF (img2pdf, sin recomprimir)
+# y de ahi siguen el mismo camino que un PDF nativo -- el archivo entero va a
+# Claude/OpenAI, que lo lee con vision. NO hay OCR en el medio.
+MIMES_IMAGEN = {"image/jpeg", "image/png", "image/webp", "image/gif"}
+
+# Extension del nombre -> mime canonico. Gmail devuelve el mimeType que puso el
+# cliente que envio el mail y muchos mandan el PDF como application/octet-stream
+# (o text/plain, o application/x-pdf): filtrar solo por mime tira esos CVs a
+# "sin_cv". La extension del archivo es mas confiable que ese header.
+MIME_POR_EXTENSION = {
+    ".pdf": "application/pdf",
+    ".doc": "application/msword",
+    ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    ".txt": "text/plain",
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".png": "image/png",
+    ".webp": "image/webp",
+    ".gif": "image/gif",
+}
+
 # Si el nombre del archivo contiene alguna de estas palabras, no se considera CV
 # aunque tenga una extension valida (certificados, diplomas, etc.).
 PALABRAS_PROHIBIDAS_NOMBRE = [
     "certificado", "diploma", "curso", "presentacion", "portfolio", "constancia",
 ]
+
+# Solo para imagenes: nombres tipicos de la firma del mail y de los logos
+# incrustados, que Gmail devuelve como adjuntos igual que cualquier otro.
+PALABRAS_PROHIBIDAS_IMAGEN = [
+    "image00", "logo", "firma", "signature", "icon", "banner", "avatar",
+    "whatsapp image", "screenshot", "captura",
+]
+
+# Piso de bytes para aceptar una imagen como CV. Una firma o un icono pesan
+# unos pocos KB; la foto de una hoja pesa cientos. Sin este piso, cada mail
+# corporativo con logo entraria al LLM y crearia un candidato vacio.
+TAMANIO_MIN_IMAGEN_CV = 60_000
 
 # Palabras que indican intencion de postulacion en asunto/cuerpo del mail
 # (para distinguir "sin CV pero es postulacion" de "no tiene nada que ver").

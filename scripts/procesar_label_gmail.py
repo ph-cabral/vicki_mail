@@ -25,10 +25,22 @@ donde lo lee la barra de CVs del chat) y en el mail original.
   original + PDF + miniatura en el store) y se completa sólo lo que falte;
   después pasa al label destino igual. Los flags de la base no se creen de
   palabra: se mira el disco.
-- **Adjunto que es foto/escaneo** (texto extraído por debajo de
-  MIN_CHARS_TEXTO_VALIDO), **mensaje sin CV adjunto** y **falla del LLM** →
-  no se tocan: quedan con el label de origen para revisar a mano, y salen en
-  el CSV del reporte.
+- **Foto del CV** (jpg/png/webp/gif) → se pasa a PDF con img2pdf, sin
+  recomprimir, y se le manda entera al modelo, que la lee con visión. **No hay
+  OCR.** Antes de gastar la llamada se descartan las firmas y logos del mail
+  por nombre y por peso (PALABRAS_PROHIBIDAS_IMAGEN, TAMANIO_MIN_IMAGEN_CV).
+- **PDF escaneado** (texto extraído por debajo de MIN_CHARS_TEXTO_VALIDO) →
+  se descarta como antes, salvo que se pase `--escaneos`, que lo manda al
+  modelo por el mismo camino que la foto.
+- **Perfil vacío** (el modelo no sacó ni nombre ni contacto ni experiencia) →
+  `sin_datos`, no se carga: sería un candidato fantasma en la base.
+- **Mensaje sin CV adjunto** y **falla del LLM** → no se tocan: quedan con el
+  label de origen para revisar a mano, y salen en el CSV del reporte.
+
+El mime del adjunto se resuelve por la extensión del nombre y no por el
+mimeType que devuelve Gmail (`extract.mime_normalizado`): muchos clientes
+mandan el PDF como `application/octet-stream` y filtrar por ese header los
+tiraba a `sin_cv`.
 
 ## Uso
 
@@ -69,11 +81,13 @@ from app.extract import (
     EXTENSION_POR_MIME_CONVERTIBLE,
     calcular_hash,
     convertir_a_pdf,
+    es_imagen,
     es_imagen_o_escaneo,
     extraer_texto,
     filtrar_adjunto_cv,
+    imagen_a_pdf,
 )
-from app.llm import analizar_cv
+from app.llm import analizar_cv, perfil_sin_persona
 from app.qdrant_store import hashes_indexados, upsert_documento
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
@@ -146,7 +160,14 @@ def texto_limpio_de(hash_archivo: str) -> str:
 
 def _texto_y_pdf(data: bytes, mime: str, filename: str) -> tuple[str, bytes | None]:
     """Si el formato es convertible, primero a PDF (mejor fidelidad y se le
-    puede mandar el archivo entero al LLM); si falla, texto local."""
+    puede mandar el archivo entero al LLM); si falla, texto local.
+
+    Una imagen no tiene texto que extraer: se pasa a PDF y se manda entera al
+    modelo, que la lee con visión. Devuelve texto vacío a propósito -- el
+    llamador NO le aplica `es_imagen_o_escaneo` a estos."""
+    if es_imagen(mime):
+        return "", imagen_a_pdf(data)
+
     ext = EXTENSION_POR_MIME_CONVERTIBLE.get(mime)
     if ext:
         pdf = convertir_a_pdf(data, ext)
@@ -217,7 +238,7 @@ def _ok(h: str, filename: str, estado: str, detalle: str) -> tuple[str, str]:
 
 def procesar(message_id: str, args, docs: dict, indexados: set) -> tuple[str, str]:
     """(estado, detalle). Estados: nuevo | completado | ya_estaba | duplicado |
-    sin_cv | imagen | error_llm."""
+    sin_cv | imagen | sin_datos | error_llm."""
     msg = _g(gmail_client.get_message, message_id, download_attachments=True)
     quien = msg.get("from_address") or "?"
 
@@ -259,10 +280,16 @@ def procesar(message_id: str, args, docs: dict, indexados: set) -> tuple[str, st
 
     # ── CV nuevo (o fila incompleta: sin candidato o sin texto) → pipeline entero
     texto, pdf = _texto_y_pdf(data, mime, filename)
-    if es_imagen_o_escaneo(texto):
-        # foto o escaneo sin texto seleccionable: el LLM no lo puede leer y
-        # cargarlo sería meter un candidato vacío en la base
-        return "imagen", f"{quien} — {filename}"
+    if es_imagen(mime):
+        # foto del CV: no hay texto que extraer, la lee el modelo. Si no se
+        # pudo armar el PDF no hay nada que mandarle
+        if pdf is None:
+            return "imagen", f"{quien} — {filename} (no se pudo convertir)"
+    elif es_imagen_o_escaneo(texto):
+        # PDF/doc sin texto seleccionable (escaneo). Con --escaneos se le manda
+        # igual al modelo, que lo lee con visión; por default se descarta
+        if not (args.escaneos and pdf):
+            return "imagen", f"{quien} — {filename}"
 
     perfil = analizar_cv(
         {"mime_type": "application/pdf", "data": pdf, "filename": filename} if pdf
@@ -271,6 +298,10 @@ def procesar(message_id: str, args, docs: dict, indexados: set) -> tuple[str, st
     )
     if perfil.get("error"):
         return "error_llm", str(perfil.get("detail"))[:200]
+    if perfil_sin_persona(perfil):
+        # el modelo no sacó a nadie del archivo (firma, logo, hoja ilegible):
+        # cargarlo sería meter un candidato fantasma en la base
+        return "sin_datos", f"{quien} — {filename}"
     # el perfil va a una columna jsonb, que tampoco admite \u0000: el LLM
     # devuelve fragmentos del texto del CV y puede arrastrarlos
     perfil = json.loads(json.dumps(perfil).replace("\\u0000", ""))
@@ -328,6 +359,8 @@ def main() -> int:
     ap.add_argument("--limit", type=int, default=0, help="cortar después de N mensajes")
     ap.add_argument("--dry-run", action="store_true", help="analiza pero no escribe ni mueve labels")
     ap.add_argument("--workers", type=int, default=4, help="mensajes en paralelo (el LLM es espera de red)")
+    ap.add_argument("--escaneos", action="store_true",
+                    help="mandar también los PDF escaneados (sin texto seleccionable) al modelo, que los lee con visión")
     ap.add_argument("--reporte", default=REPORTE, help="CSV con lo que quedó sin procesar")
     args = ap.parse_args()
 

@@ -27,3 +27,7 @@ pypdf==6.13.1
 pdfplumber==0.11.9
 python-docx==1.2.0
 mammoth==1.12.0
+# Foto del CV -> PDF sin recomprimir, para mandarsela entera al LLM igual que
+# un PDF nativo (extract.imagen_a_pdf). Arrastra Pillow, que se usa de
+# contingencia para los PNG con canal alfa que img2pdf no embebe directo.
+img2pdf==0.6.3

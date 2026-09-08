@@ -35,6 +35,10 @@ EXTENSION_POR_MIME = {
     "application/msword": ".doc",
     "application/vnd.openxmlformats-officedocument.wordprocessingml.document": ".docx",
     "text/plain": ".txt",
+    "image/jpeg": ".jpg",
+    "image/png": ".png",
+    "image/webp": ".webp",
+    "image/gif": ".gif",
 }
 
 # Ancho de la miniatura en px. La barra del chat la muestra a ~150px de ancho;
