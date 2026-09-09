@@ -45,6 +45,26 @@ request/response como `vicki_chat`.
 3. Al terminar, saca el mensaje de la cola (remueve label + INBOX) y lo
    marca como leído.
 
+### Que un mensaje no se responda dos veces
+
+Sacarlo de INBOX es lo único que impide que el poll (cada 2 min) lo vuelva a
+tomar y le reenvíe la respuesta al remitente. Hay dos protecciones:
+
+- **`gmail_client.archivar()`** hace ese paso solo, en una llamada aparte del
+  etiquetado y con su propio `try`. Los labels se resuelven antes contra el
+  buzón (`gmail_client.resolver_label`): un `Label_...` viejo o borrado se
+  descarta con un warning en vez de hacer que Gmail rechace la llamada entera
+  con `400 labelId not found` — que era lo que dejaba el mensaje en INBOX y
+  disparaba el reenvío en loop. Si el valor configurado es un *nombre* y no
+  existe, se crea.
+- **`rag_system.mail_procesado`** (una fila por `message_id` respondido).
+  `procesar_cola` consulta el lote entero en una sola query antes de procesar:
+  lo que ya se respondió se archiva y se saltea, aunque haya quedado en INBOX
+  por una falla de Gmail.
+
+`GET /labels` muestra, además del listado del buzón, a qué resuelve cada
+`LABEL_*` configurado (`null` = no existe).
+
 ## Archivo del CV (store local + Drive)
 
 Además de subirlo a Drive, cada CV se guarda en `CV_STORE_DIR`
@@ -186,7 +206,10 @@ Contenedor `vicki-mail`, puerto host `8089`. `/health` para chequear,
   contra un mensaje de prueba y revisar los logs.
 - **`LABEL_CV_PROCESADO`**: usá `GET /labels` para confirmar que el ID
   corresponde al label correcto en el buzón real (no es legible solo mirando
-  el JSON de n8n). `LABEL_QUEUE` ya no hace falta confirmarlo — quedó sin uso
+  el JSON de n8n); mirá el bloque `resueltos` de la respuesta, si da `null` el
+  label no existe. Se puede poner el **nombre** visible del label en vez del
+  ID (`LABEL_CV_PROCESADO="CV procesado"`): se resuelve solo y, si no existe,
+  se crea. `LABEL_QUEUE` ya no hace falta confirmarlo — quedó sin uso
   en el descubrimiento de mensajes (ver arriba), solo se sigue removiendo por
   las dudas en `nodes.py:_cerrar` si un mensaje todavía lo tuviera puesto de
   cuando existía el filtro viejo.

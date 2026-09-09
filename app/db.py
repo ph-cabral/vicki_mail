@@ -235,6 +235,67 @@ def ensure_columnas_archivo() -> None:
         log.exception("no se pudieron verificar las columnas de archivo en documento_aprobado")
 
 
+# ── mensajes ya respondidos (candado anti-reenvio) ──────────────────────────
+# Segunda barrera, independiente de Gmail: el ciclo normal cierra un mensaje
+# sacandolo de INBOX, pero si esa llamada falla (label inexistente, corte de
+# red, cuota) el mensaje sigue en la bandeja y el poll de cada 2 minutos lo
+# vuelve a tomar y le responde de nuevo al remitente. Con esta tabla, un
+# message_id ya respondido no se reprocesa: se archiva y se sigue de largo.
+_DDL_MAIL_PROCESADO = """
+CREATE TABLE IF NOT EXISTS rag_system.mail_procesado (
+  message_id   TEXT PRIMARY KEY,
+  accion       TEXT,
+  procesado_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+"""
+
+
+def ensure_tabla_mail_procesado() -> None:
+    """Idempotente, corre en cada arranque (main.lifespan). Si falla se loguea
+    y sigue: sin la tabla el servicio funciona igual, solo se queda con la
+    proteccion basada en labels."""
+    try:
+        with get_pool().connection() as conn:
+            conn.execute(_DDL_MAIL_PROCESADO)
+            conn.commit()
+    except Exception:
+        log.exception("no se pudo verificar la tabla rag_system.mail_procesado")
+
+
+def mensajes_ya_procesados(message_ids: list[str]) -> set[str]:
+    """De los IDs que trajo el poll, cuales ya se respondieron antes.
+
+    Una sola consulta por lote (`= ANY`, que resuelve por la PK) en vez de una
+    por mensaje. Si la base no responde devuelve vacio: se prefiere reprocesar
+    a frenar la ingesta, la proteccion de labels sigue en pie."""
+    if not message_ids:
+        return set()
+    sql = "SELECT message_id FROM rag_system.mail_procesado WHERE message_id = ANY(%s)"
+    try:
+        with get_pool().connection() as conn:
+            filas = conn.execute(sql, (list(message_ids),)).fetchall()
+        return {f[0] for f in filas}
+    except Exception:
+        log.exception("no se pudo consultar los mensajes ya procesados")
+        return set()
+
+
+def marcar_mensaje_procesado(message_id: str, accion: str | None = None) -> None:
+    """Deja constancia de que a este mensaje ya se le corrio el grafo (y por lo
+    tanto ya se le respondio al remitente). DO NOTHING: la primera marca manda."""
+    sql = """
+    INSERT INTO rag_system.mail_procesado (message_id, accion)
+    VALUES (%(message_id)s, %(accion)s)
+    ON CONFLICT (message_id) DO NOTHING
+    """
+    try:
+        with get_pool().connection() as conn:
+            conn.execute(sql, {"message_id": message_id, "accion": accion})
+            conn.commit()
+    except Exception:
+        log.exception("no se pudo marcar como procesado el mensaje %s", message_id)
+
+
 def marcar_archivo(hash_archivo: str, *, drive_file_id: str | None = None,
                    local: bool | None = None, pdf: bool | None = None,
                    thumb: bool | None = None) -> None:

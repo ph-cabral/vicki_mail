@@ -93,6 +93,94 @@ def list_labels() -> list[dict]:
     return [{"id": l["id"], "name": l["name"]} for l in resp.get("labels", [])]
 
 
+# El directorio de labels del buzon, cacheado en memoria: se pide una vez y se
+# refresca solo cuando algo no matchea o cuando creamos un label. Sin esto
+# habria una llamada extra a la API por cada mensaje procesado.
+_labels_cacheados: list[dict] | None = None
+# Labels configurados que no existen en el buzon: se loguean UNA vez y despues
+# se ignoran en silencio (y sin volver a pedir el directorio).
+_labels_invalidos: set[str] = set()
+
+
+def _labels(refrescar: bool = False) -> list[dict]:
+    global _labels_cacheados
+    if _labels_cacheados is None or refrescar:
+        _labels_cacheados = list_labels()
+    return _labels_cacheados
+
+
+def crear_label(nombre: str) -> str | None:
+    """Crea un label visible con ese nombre y devuelve su ID. None si Gmail lo
+    rechaza (nombre invalido, ya existe con otra forma, sin permisos)."""
+    try:
+        creado = _service().users().labels().create(
+            userId="me",
+            body={"name": nombre, "labelListVisibility": "labelShow",
+                  "messageListVisibility": "show"},
+        ).execute()
+    except Exception:
+        log.exception("no se pudo crear el label %r", nombre)
+        return None
+    _labels(refrescar=True)
+    log.info("label %r creado (id=%s)", nombre, creado.get("id"))
+    return creado.get("id")
+
+
+def _buscar_label(valor: str, labels: list[dict]) -> str | None:
+    for l in labels:
+        if l["id"] == valor:
+            return l["id"]
+    buscado = _normalizar_label(valor.removeprefix("label:"))
+    for l in labels:
+        if _normalizar_label(l["name"]) == buscado:
+            return l["id"]
+    return None
+
+
+def resolver_label(valor: str, crear: bool = False) -> str | None:
+    """ID real de un label a partir de lo que haya configurado: un ID
+    (Label_1234...), el nombre visible, o la forma 'label:...' de la busqueda.
+    None si en el buzon no existe nada que matchee.
+
+    Existe porque un ID viejo/borrado hace que Gmail rechace la llamada entera
+    con 400 'labelId not found'. Resolviendo primero, un label que ya no esta
+    se descarta y el resto de la operacion sigue: nunca puede impedir que el
+    mensaje salga de INBOX (ver nodes._cerrar)."""
+    if not valor or valor in _labels_invalidos:
+        return None
+    if valor in LABELS_SISTEMA:
+        return valor
+    encontrado = _buscar_label(valor, _labels())
+    if encontrado is None:
+        # el label puede haberse creado despues de cachear el directorio
+        encontrado = _buscar_label(valor, _labels(refrescar=True))
+    if encontrado:
+        return encontrado
+    if crear and not valor.startswith("Label_"):
+        # vino un nombre, no un ID: se puede crear tal cual
+        creado = crear_label(valor)
+        if creado:
+            return creado
+    _labels_invalidos.add(valor)
+    log.error(
+        "el label %r no existe en el buzon (%s): se ignora. Corregir "
+        "LABEL_* en .env con el ID/nombre real -- GET /labels los lista.",
+        valor, config.GMAIL_USER,
+    )
+    return None
+
+
+def _resolver_varios(valores: list[str], crear: bool = False) -> list[str]:
+    """IDs reales de una lista de labels, sin repetidos y salteando los que no
+    existen."""
+    ids: list[str] = []
+    for valor in valores or []:
+        real = resolver_label(valor, crear=crear)
+        if real and real not in ids:
+            ids.append(real)
+    return ids
+
+
 def list_queue(label_id: str, max_results: int = 5) -> list[str]:
     """IDs de mensajes con el label 'cola' (equivalente a nodo 'Recibir Mensaje').
     Ya no se usa para descubrir mensajes nuevos (ver list_inbox) -- se deja
@@ -119,17 +207,12 @@ def _normalizar_label(nombre: str) -> str:
 
 def label_id_por_nombre(nombre: str) -> str | None:
     """ID interno del label a partir de su nombre visible (o de la forma
-    'label:...' de la busqueda). Si ya viene un ID (Label_..., INBOX, UNREAD) se
-    devuelve tal cual. None si no hay ningun label que matchee."""
-    if not nombre:
-        return None
-    if nombre.startswith("Label_") or nombre in LABELS_SISTEMA:
-        return nombre
-    buscado = _normalizar_label(nombre.removeprefix("label:"))
-    for l in list_labels():
-        if _normalizar_label(l["name"]) == buscado:
-            return l["id"]
-    return None
+    'label:...' de la busqueda). None si no hay ningun label que matchee.
+
+    A diferencia de antes, un valor con forma de ID (Label_...) tambien se
+    verifica contra el buzon en vez de devolverse tal cual: un ID que ya no
+    existe devuelve None aca y no una llamada rechazada mas adelante."""
+    return resolver_label(nombre)
 
 
 def iter_messages_por_label(label_id: str, page_size: int = 500):
@@ -252,15 +335,39 @@ def thread_has_sent_message(thread_id: str, exclude_message_id: str = "") -> boo
     return False
 
 
-def add_labels(message_id: str, label_ids: list[str]) -> None:
+def add_labels(message_id: str, label_ids: list[str], crear: bool = False) -> None:
+    """Aplica labels resolviendolos antes: los que no existen se descartan (con
+    `crear=True`, un valor que sea un nombre se crea). Si no queda ninguno no se
+    llama a la API."""
+    ids = _resolver_varios(label_ids, crear=crear)
+    if not ids:
+        return
     _service().users().messages().modify(
-        userId="me", id=message_id, body={"addLabelIds": label_ids}
+        userId="me", id=message_id, body={"addLabelIds": ids}
     ).execute()
 
 
 def remove_labels(message_id: str, label_ids: list[str]) -> None:
+    ids = _resolver_varios(label_ids)
+    if not ids:
+        return
     _service().users().messages().modify(
-        userId="me", id=message_id, body={"removeLabelIds": label_ids}
+        userId="me", id=message_id, body={"removeLabelIds": ids}
+    ).execute()
+
+
+def archivar(message_id: str, quitar_labels: list[str] | None = None) -> None:
+    """Saca el mensaje de INBOX y lo marca leido en UNA sola llamada (y de paso
+    le quita los labels extra que se pidan, ej. la 'cola').
+
+    Es el paso que decide si el mensaje se vuelve a procesar: mientras siga en
+    INBOX, list_inbox() lo devuelve en cada poll y el grafo le responde de
+    nuevo al remitente. Por eso va solo, sin depender de ningun otro label."""
+    ids = _resolver_varios(["INBOX", "UNREAD", *(quitar_labels or [])])
+    if not ids:
+        return
+    _service().users().messages().modify(
+        userId="me", id=message_id, body={"removeLabelIds": ids}
     ).execute()
 
 

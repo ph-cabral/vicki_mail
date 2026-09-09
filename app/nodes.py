@@ -63,13 +63,21 @@ def _cerrar(state: EmailState, aplicar_label_procesado: bool = True) -> None:
     message_id = state.get("message_id")
     if not message_id:
         return
+    # El etiquetado va en su PROPIO try y antes del archivado, pero no lo
+    # condiciona: cuando los dos colgaban del mismo try, un LABEL_CV_PROCESADO
+    # que ya no existia en el buzon (400 'labelId not found') cortaba la
+    # funcion antes de sacar el mensaje de INBOX -> el poll de cada 2 minutos
+    # lo volvia a tomar y le reenviaba la respuesta al postulante una y otra
+    # vez. Etiquetar es cosmetico; archivar es lo que cierra el ciclo.
+    if aplicar_label_procesado:
+        try:
+            gmail_client.add_labels(message_id, [LABEL_CV_PROCESADO], crear=True)
+        except Exception:
+            log.exception("no se pudo etiquetar como procesado el mensaje %s (se archiva igual)", message_id)
     try:
-        if aplicar_label_procesado:
-            gmail_client.add_labels(message_id, [LABEL_CV_PROCESADO])
-        gmail_client.remove_labels(message_id, [LABEL_QUEUE, "INBOX"])
-        gmail_client.mark_as_read(message_id)
+        gmail_client.archivar(message_id, quitar_labels=[LABEL_QUEUE])
     except Exception:
-        log.exception("no se pudo finalizar/etiquetar el mensaje %s", message_id)
+        log.exception("no se pudo archivar el mensaje %s (queda en INBOX)", message_id)
 
 
 def _reenviar_a_rrhh(state: EmailState, asunto: str = "nos escribieron a seleccion", eliminar: bool = True) -> None:
@@ -114,12 +122,15 @@ def _reenviar_a_rrhh(state: EmailState, asunto: str = "nos escribieron a selecci
         log.exception("no se pudo reenviar a RRHH el mensaje %s", message_id)
         return
     if not eliminar:
+        # mismo criterio que _cerrar: la etiqueta no puede impedir el archivado
         try:
-            gmail_client.add_labels(message_id, [LABEL_ALT_PROCESADO])
-            gmail_client.remove_labels(message_id, [LABEL_QUEUE, "INBOX"])
-            gmail_client.mark_as_read(message_id)
+            gmail_client.add_labels(message_id, [LABEL_ALT_PROCESADO], crear=True)
         except Exception:
             log.exception("no se pudo etiquetar el mensaje %s tras reenviarlo a RRHH", message_id)
+        try:
+            gmail_client.archivar(message_id, quitar_labels=[LABEL_QUEUE])
+        except Exception:
+            log.exception("no se pudo archivar el mensaje %s tras reenviarlo a RRHH (queda en INBOX)", message_id)
         return
     try:
         gmail_client.delete_message(message_id)
