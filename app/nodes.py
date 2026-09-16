@@ -36,6 +36,7 @@ from app.email_templates import (
     foto_no_procesada,
     postulacion_recibida,
     recordatorio_uso_interno,
+    solo_recepcion_cv,
     ya_registrado,
 )
 from app.extract import (
@@ -363,18 +364,30 @@ def reply_imagen_node(state: EmailState) -> dict:
 
 
 def reply_sin_cv_node(state: EmailState) -> dict:
-    """Sin CV adjunto: se reenvia directo a RRHH interno (recursoshumanos@),
-    sin mandarle al remitente la plantilla automatica pidiendo el CV. No hay
-    adjunto que preservar, asi que el original se borra tras reenviarse
-    (`eliminar=True`, default de `_reenviar_a_rrhh`).
+    """Sin CV adjunto. Revertido 2026-09-16 al comportamiento del workflow n8n
+    original (el cambio de 2026-07-20 mandaba todo directo a RRHH sin avisar
+    al remitente: la mayoria de la gente que escribe sin adjuntar responde
+    despues corrigiendo, y esas respuestas se perdian mezcladas en la pila de
+    reenvios genericos a RRHH sin ningun contexto).
 
-    Cambiado 2026-07-20: antes el primer mensaje sin CV en un hilo recibia
-    la plantilla "esto es solo para CVs" y se archivaba, y recien se
-    reenviaba a RRHH si la persona volvia a escribir sin adjuntar (usando
-    `thread_has_sent_message`). Pedido explicito: todo mensaje sin CV va
-    directo a RRHH, sin ese paso intermedio."""
-    _reenviar_a_rrhh(state, asunto="nos escribieron a seleccion (sin CV adjunto)")
-    return {"accion_final": "reenviado_rrhh"}
+    - Primera vez en el hilo (`thread_has_sent_message` da False): se le pide
+      el formato correcto (`solo_recepcion_cv`) y se cierra SIN avisar a
+      RRHH todavia -- la mayoria corrige solo con esto.
+    - Ya se le habia pedido en este mismo hilo y volvio a escribir sin CV: se
+      reenvia a RRHH interno (recursoshumanos@), marcando en el asunto que es
+      un reintento fallido (para que no se pierda entre los reenvios
+      genericos sin adjunto), y se borra el original (`eliminar=True`,
+      default de `_reenviar_a_rrhh`) -- no hay adjunto que preservar."""
+    if gmail_client.thread_has_sent_message(state.get("thread_id", ""), state.get("message_id", "")):
+        _reenviar_a_rrhh(
+            state,
+            asunto="CV: ya se le pidio el formato correcto y volvio a escribir sin adjunto",
+        )
+        return {"accion_final": "reenviado_rrhh_reintento"}
+    subject, html = solo_recepcion_cv(state.get("from_name") or "")
+    gmail_client.send_email(state["from_address"], subject, html)
+    _cerrar(state)
+    return {"accion_final": "sin_cv_avisado"}
 
 
 def delete_and_notice_node(state: EmailState) -> dict:
