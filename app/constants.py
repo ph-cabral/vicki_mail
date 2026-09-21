@@ -15,12 +15,22 @@ LABEL_QUEUE = os.getenv("LABEL_QUEUE", "Label_4652258528252762123")
 # registrado, recordatorio a interno).
 LABEL_CV_PROCESADO = os.getenv("LABEL_CV_PROCESADO", "Label_3877397017358731180")
 
-# Label para CVs con adjunto que la IA no pudo procesar (nodes.py:error_node):
-# se reenvian a RRHH para carga manual, pero el original NO se borra -- se
-# etiqueta con esto y se saca de INBOX (2026-07-20, ver _reenviar_a_rrhh).
-# Originalmente visto en una rama del workflow n8n que no se pudo identificar
-# con certeza (nodo "Agregar Etiqueta cv procesado8") -- se reusa para este caso.
-LABEL_ALT_PROCESADO = os.getenv("LABEL_ALT_PROCESADO", "Label_642290056197378156")
+# -- Revision manual (reemplaza al reenvio por mail a RRHH, 2026-09-21) ------
+# Lo que el flujo automatico no resuelve ya no se le manda por mail a
+# recursoshumanos@: queda en el propio buzon de seleccion@, etiquetado y fuera
+# de INBOX, para que RRHH lo revise cuando quiera (ver nodes._derivar_a_revision).
+#
+# Se aplican SIEMPRE dos etiquetas: la padre (la vista con todo junto) y la del
+# motivo. Van por NOMBRE y no por ID: gmail_client.resolver_label(crear=True)
+# las crea solas la primera vez, asi no hay que cargar ningun Label_... a mano
+# (que es de donde vino el bug de los IDs inexistentes heredados de n8n).
+LABEL_REVISAR = os.getenv("LABEL_REVISAR", "RRHH a revisar")
+# Escribio sin CV, ya se le habia pedido el formato en ese mismo hilo.
+LABEL_REVISAR_SIN_CV = os.getenv("LABEL_REVISAR_SIN_CV", LABEL_REVISAR + "/sin CV")
+# Tenia CV adjunto pero la IA no pudo procesarlo: hay que cargarlo a mano.
+LABEL_REVISAR_NO_PROCESADO = os.getenv("LABEL_REVISAR_NO_PROCESADO", LABEL_REVISAR + "/no procesado")
+# Remitente interno (@everwear.com.ar) que ya recibio el recordatorio.
+LABEL_REVISAR_INTERNO = os.getenv("LABEL_REVISAR_INTERNO", LABEL_REVISAR + "/interno")
 
 # Carpetas Drive donde Read AI / Fireflies dejan los resumenes de reunion.
 DRIVE_FOLDER_READAI_SRC = os.getenv("DRIVE_FOLDER_READAI_SRC", "15lKi0d6gi6qCBbDkGCyLzspmZMJuySck")

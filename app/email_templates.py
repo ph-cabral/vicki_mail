@@ -3,6 +3,7 @@ Plantillas de respuesta. Texto y firma copiados literal de los nodos
 emailSend del workflow n8n original, salvo donde se indica "NUEVA" (caso
 descrito por el usuario que no tenía un nodo equivalente en el JSON).
 """
+from app.config import config
 
 FIRMA_HTML = """
 <br>
@@ -128,9 +129,9 @@ def ya_registrado(nombre: str) -> tuple[str, str]:
 # Send email5 en n8n — remitente interno (@everwear.com.ar), mail eliminado.
 def recordatorio_uso_interno() -> tuple[str, str]:
     subject = "Recordatorio!!!"
-    html = _wrap("""<p>Buenas tardes, te recuerdo que este correo solo sera utilizado para postulaciones.</p>
+    html = _wrap(f"""<p>Buenas tardes, te recuerdo que este correo solo sera utilizado para postulaciones.</p>
 
-<p>Por favor, para gestiones personales/internas enviar solicitud a recursoshumanos@everwear.com.ar</p>""")
+<p>Por favor, para gestiones personales/internas enviar solicitud a {config.RRHH_INTERNAL_CONTACT}</p>""")
     return subject, html
 
 

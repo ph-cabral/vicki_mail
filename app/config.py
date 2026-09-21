@@ -48,7 +48,13 @@ class Config:
     BATCH_SIZE: int = int(os.getenv("BATCH_SIZE", "5"))
 
     # ── Emails / dominios ────────────────────────────────────────────────
+    # Ya NO es el remitente de las respuestas (eso pasó a ser GMAIL_USER, para
+    # que lo que conteste un postulante vuelva a seleccion@ y no a RRHH).
+    # Queda sólo como guarda anti-loop en nodes.router_email.
     RRHH_EMAIL: str = os.getenv("RRHH_EMAIL", "rrhh@everwear.com.ar")
+    # Casilla de RRHH para gestiones internas de personas. El flujo automático
+    # NO le manda nada: sólo se la nombra en el texto del recordatorio que
+    # recibe un remitente interno (email_templates.recordatorio_uso_interno).
     RRHH_INTERNAL_CONTACT: str = os.getenv("RRHH_INTERNAL_CONTACT", "recursoshumanos@everwear.com.ar")
     INTERNAL_DOMAIN: str = os.getenv("INTERNAL_DOMAIN", "everwear.com.ar")
 

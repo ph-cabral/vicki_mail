@@ -17,9 +17,12 @@ from app.constants import (
     DRIVE_FOLDER_READAI_SRC,
     DRIVE_TEMPLATE_CV_FILE_ID,
     DRIVE_TEMPLATE_CV_FILENAME,
-    LABEL_ALT_PROCESADO,
     LABEL_CV_PROCESADO,
     LABEL_QUEUE,
+    LABEL_REVISAR,
+    LABEL_REVISAR_INTERNO,
+    LABEL_REVISAR_NO_PROCESADO,
+    LABEL_REVISAR_SIN_CV,
     SENDER_FIREFLIES,
     SENDER_MEDICINA_LABORAL,
     SENDER_READAI,
@@ -81,62 +84,44 @@ def _cerrar(state: EmailState, aplicar_label_procesado: bool = True) -> None:
         log.exception("no se pudo archivar el mensaje %s (queda en INBOX)", message_id)
 
 
-def _reenviar_a_rrhh(state: EmailState, asunto: str = "nos escribieron a seleccion", eliminar: bool = True) -> None:
-    """Ya no es para nuestro flujo automatico (hilo repetido, mensaje sin CV,
-    o la IA fallo su unico intento): se reenvia tal cual a RRHH interno
-    (recursoshumanos@, `config.RRHH_INTERNAL_CONTACT`).
+def _derivar_a_revision(state: EmailState, motivo: str) -> None:
+    """Lo que el flujo automatico no resuelve (hilo ya respondido, mensaje sin
+    CV, o la IA fallo su unico intento) se deja en el propio buzon de
+    seleccion@ ETIQUETADO para revision manual.
 
-    `eliminar` decide que pasa con el original en el buzon de seleccion
-    despues de reenviarlo:
-    - True (default): se borra (gmail trash) -- para casos sin CV adjunto,
-      donde el unico contenido de valor es el texto del mensaje, que ya viaja
-      completo en el reenvio.
-    - False: se etiqueta con `LABEL_ALT_PROCESADO` y se saca de INBOX (igual
-      que `_cerrar`, sin marcar "cv procesado") en vez de borrarse -- para
-      CVs con adjunto que no se pudieron procesar automaticamente: el
-      archivo original queda visible en el buzon (etiqueta) ademas de la
-      copia que le llega a RRHH, para no perder el adjunto si el reenvio
-      fallara o RRHH necesita volver a bajarlo (2026-07-20, pedido explicito:
-      "los que tenian cv" no se eliminan)."""
+    Reemplaza al reenvio por mail a `config.RRHH_INTERNAL_CONTACT`
+    (2026-09-21): cada caso derivado generaba un mail a la casilla de RRHH y
+    el volumen terminaba siendo ruido. Ahora no sale ningun mail: queda todo
+    junto y buscable en el buzon de seleccion, que es donde ya estaba.
+
+    Se aplican DOS etiquetas: la padre `LABEL_REVISAR` (la vista con todo) y
+    la del `motivo` (sub-etiqueta). La padre se aplica explicita en vez de
+    confiar en el anidado implicito de Gmail al crear "Padre/Hijo": asi la
+    vista "todo junto" existe siempre, sin depender de como la UI interprete
+    la barra.
+
+    El original NUNCA se borra. Antes, los casos sin adjunto se mandaban a la
+    papelera porque el reenvio ya llevaba el texto completo del mensaje; sin
+    ese reenvio el mensaje ES el registro, asi que borrarlo seria perder el
+    caso.
+
+    Etiquetar y archivar van en `try` separados, mismo criterio que `_cerrar`:
+    si Gmail rechaza una etiqueta, el mensaje tiene que salir de INBOX igual o
+    el poll lo vuelve a tomar en la proxima corrida."""
     message_id = state.get("message_id")
     if not message_id:
         return
-    remitente = state.get("from_name") or state.get("from_address") or "desconocido"
-    cuerpo_original = (state.get("body_text") or "").strip() or "(sin contenido)"
-    html = (
-        f"<p>Mensaje reenviado desde {config.GMAIL_USER}.</p>"
-        f"<p><b>De:</b> {remitente} &lt;{state.get('from_address', '')}&gt;<br>"
-        f"<b>Asunto original:</b> {state.get('subject', '')}</p>"
-        f"<hr>"
-        f"<p>{cuerpo_original.replace(chr(10), '<br>')}</p>"
-    )
-    attachments = [
-        {"filename": a["filename"], "data": a["data"]}
-        for a in (state.get("attachments") or [])
-    ] or None
     try:
-        gmail_client.send_email(
-            config.RRHH_INTERNAL_CONTACT, asunto, html,
-            attachments=attachments,
+        gmail_client.add_labels(message_id, [LABEL_REVISAR, motivo], crear=True)
+    except Exception:
+        log.exception("no se pudo etiquetar para revision el mensaje %s (se archiva igual)", message_id)
+    try:
+        gmail_client.archivar(message_id, quitar_labels=[LABEL_QUEUE])
+    except Exception:
+        log.exception(
+            "no se pudo archivar el mensaje %s tras derivarlo a revision (queda en INBOX)",
+            message_id,
         )
-    except Exception:
-        log.exception("no se pudo reenviar a RRHH el mensaje %s", message_id)
-        return
-    if not eliminar:
-        # mismo criterio que _cerrar: la etiqueta no puede impedir el archivado
-        try:
-            gmail_client.add_labels(message_id, [LABEL_ALT_PROCESADO], crear=True)
-        except Exception:
-            log.exception("no se pudo etiquetar el mensaje %s tras reenviarlo a RRHH", message_id)
-        try:
-            gmail_client.archivar(message_id, quitar_labels=[LABEL_QUEUE])
-        except Exception:
-            log.exception("no se pudo archivar el mensaje %s tras reenviarlo a RRHH (queda en INBOX)", message_id)
-        return
-    try:
-        gmail_client.delete_message(message_id)
-    except Exception:
-        log.exception("no se pudo eliminar el mensaje %s tras reenviarlo a RRHH", message_id)
 
 
 def _nombre_destinatario(state: EmailState) -> str:
@@ -365,25 +350,21 @@ def reply_imagen_node(state: EmailState) -> dict:
 
 def reply_sin_cv_node(state: EmailState) -> dict:
     """Sin CV adjunto. Revertido 2026-09-16 al comportamiento del workflow n8n
-    original (el cambio de 2026-07-20 mandaba todo directo a RRHH sin avisar
-    al remitente: la mayoria de la gente que escribe sin adjuntar responde
-    despues corrigiendo, y esas respuestas se perdian mezcladas en la pila de
-    reenvios genericos a RRHH sin ningun contexto).
+    original (el cambio de 2026-07-20 derivaba todo sin avisarle al remitente:
+    la mayoria de la gente que escribe sin adjuntar responde despues
+    corrigiendo, y esas respuestas se perdian en la pila de derivaciones
+    genericas sin ningun contexto).
 
     - Primera vez en el hilo (`thread_has_sent_message` da False): se le pide
-      el formato correcto (`solo_recepcion_cv`) y se cierra SIN avisar a
-      RRHH todavia -- la mayoria corrige solo con esto.
+      el formato correcto (`solo_recepcion_cv`) y se cierra SIN derivar
+      todavia -- la mayoria corrige solo con esto.
     - Ya se le habia pedido en este mismo hilo y volvio a escribir sin CV: se
-      reenvia a RRHH interno (recursoshumanos@), marcando en el asunto que es
-      un reintento fallido (para que no se pierda entre los reenvios
-      genericos sin adjunto), y se borra el original (`eliminar=True`,
-      default de `_reenviar_a_rrhh`) -- no hay adjunto que preservar."""
+      etiqueta para revision manual bajo `LABEL_REVISAR_SIN_CV`, que es lo que
+      distingue el reintento fallido del resto. El mensaje queda en el buzon
+      (antes se borraba, porque el reenvio a RRHH se llevaba el texto)."""
     if gmail_client.thread_has_sent_message(state.get("thread_id", ""), state.get("message_id", "")):
-        _reenviar_a_rrhh(
-            state,
-            asunto="CV: ya se le pidio el formato correcto y volvio a escribir sin adjunto",
-        )
-        return {"accion_final": "reenviado_rrhh_reintento"}
+        _derivar_a_revision(state, LABEL_REVISAR_SIN_CV)
+        return {"accion_final": "revision_sin_cv"}
     subject, html = solo_recepcion_cv(state.get("from_name") or "")
     gmail_client.send_email(state["from_address"], subject, html)
     _cerrar(state)
@@ -397,9 +378,9 @@ def delete_and_notice_node(state: EmailState) -> dict:
     if gmail_client.thread_has_sent_message(state.get("thread_id", ""), state.get("message_id", "")):
         # ya se mando el recordatorio antes en este hilo (esto es lo que
         # generaba el loop de "Recordatorio!!!") -> no volver a
-        # responder/borrar acá, se reenvia a RRHH y se elimina.
-        _reenviar_a_rrhh(state)
-        return {"accion_final": "reenviado_rrhh"}
+        # responder/borrar aca: se etiqueta para revision y se archiva.
+        _derivar_a_revision(state, LABEL_REVISAR_INTERNO)
+        return {"accion_final": "revision_interno"}
     subject, html = recordatorio_uso_interno()
     gmail_client.send_email(state["from_address"], subject, html)
     gmail_client.delete_message(state["message_id"])
@@ -415,13 +396,13 @@ def ignore_node(state: EmailState) -> dict:
 
 def error_node(state: EmailState) -> dict:
     """Un solo intento por email: si la IA no devolvio un JSON parseable
-    (ni Claude ni el fallback a OpenAI), no se reintenta en el proximo
-    poll -- se reenvia el CV a RRHH para carga manual. El mensaje SI tenia
-    un CV adjunto, asi que no se borra (`eliminar=False`): se etiqueta con
-    LABEL_ALT_PROCESADO y se saca de INBOX, ver `_reenviar_a_rrhh`."""
+    (ni Claude ni el fallback a OpenAI), no se reintenta en el proximo poll --
+    el CV queda etiquetado bajo `LABEL_REVISAR_NO_PROCESADO` para carga
+    manual. El adjunto original sigue en el mensaje, en el buzon: no hace
+    falta reenviarlo a ningun lado para que RRHH lo pueda bajar."""
     log.error("fallo de analisis LLM en mensaje %s: %s", state.get("message_id"), state.get("perfil"))
-    _reenviar_a_rrhh(state, asunto="CV recibido, no se pudo procesar automaticamente", eliminar=False)
-    return {"accion_final": "error_llm_reenviado"}
+    _derivar_a_revision(state, LABEL_REVISAR_NO_PROCESADO)
+    return {"accion_final": "revision_no_procesado"}
 
 
 # -- rama notas de reunion (Fireflies / Read AI) -----------------------------

@@ -246,7 +246,8 @@ def list_inbox(max_results: int = 5) -> list[str]:
     podia confirmar sin acceso a la cuenta real), esto lee el inbox
     directo -- cualquier mensaje que siga en INBOX es, por definicion, algo
     que todavia no se proceso (cada rama del grafo saca el mensaje de INBOX
-    al terminar, ver nodes.py:_cerrar / delete_message / _reenviar_a_rrhh).
+    al terminar, ver nodes.py:_cerrar / delete_message /
+    _derivar_a_revision).
 
     Se excluyen los mensajes que enviamos nosotros mismos (label SENT) --
     ademas del chequeo anti-loop que ya hace router_email, evita gastar una
@@ -379,10 +380,16 @@ def send_email(
     to_address: str, subject: str, html_body: str, from_address: str | None = None,
     attachments: list[dict] | None = None,
 ) -> None:
-    """attachments: [{"filename": ..., "data": bytes}] (opcional)."""
+    """attachments: [{"filename": ..., "data": bytes}] (opcional).
+
+    El From por defecto es el buzon que realmente envia (`GMAIL_USER`,
+    seleccion@). Antes era `RRHH_EMAIL` (rrhh@): Gmail mandaba igual, pero la
+    cabecera hacia que toda respuesta de un postulante aterrizara en la
+    casilla de RRHH en vez de volver a seleccion@, donde vicki_mail la puede
+    procesar (2026-09-21)."""
     msg = MIMEMultipart("mixed")
     msg["To"] = to_address
-    msg["From"] = from_address or config.RRHH_EMAIL
+    msg["From"] = from_address or config.GMAIL_USER
     msg["Subject"] = subject
 
     alt = MIMEMultipart("alternative")

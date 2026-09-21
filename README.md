@@ -18,25 +18,24 @@ request/response como `vicki_chat`.
    grafo lo saca de INBOX (o lo borra) al terminar.
 2. Por cada mensaje, corre el grafo (`app/graph.py`):
    - **Remitente interno** (`@everwear.com.ar`, no `rrhh@`) → responde
-     recordatorio y **borra** el mensaje (irreversible).
+     recordatorio y **borra** el mensaje (irreversible). Si ya se le había
+     mandado el recordatorio en ese hilo, no se repite: se etiqueta
+     `RRHH a revisar/interno` y se archiva.
    - **Es una respuesta propia** (label `SENT`) → se ignora/archiva.
    - **Read AI / Fireflies** → busca el resumen en la carpeta Drive fija de
      cada integración, lo extrae, lo guarda en Postgres + Qdrant
      (colección `documentos`) y mueve el archivo a la carpeta "procesado".
    - **Resto** → se trata como postulación:
-     - sin adjunto válido → se reenvía directo a RRHH interno
-       (`recursoshumanos@`, ver `RRHH_INTERNAL_CONTACT`) y se borra el
-       original (no hay adjunto que preservar). No se le manda plantilla al
-       remitente (cambiado 2026-07-20; antes el primer mensaje sin CV en un
-       hilo recibía "esto es solo para CVs" y recién se reenviaba a RRHH si
-       la persona volvía a escribir sin adjuntar).
+     - sin adjunto válido → la primera vez en el hilo se le pide el formato
+       correcto (`solo_recepcion_cv`) y se archiva. Si vuelve a escribir sin
+       adjuntar en el mismo hilo, se etiqueta `RRHH a revisar/sin CV` y se
+       archiva (revertido 2026-09-16 al comportamiento original de n8n).
      - adjunto es imagen/escaneo (texto extraído casi vacío) → responde
        pidiendo Word/PDF real.
      - CV válido pero la IA no pudo estructurarlo (Claude y el fallback a
-       OpenAI fallan, o el JSON viene con una forma inesperada) → se reenvía
-       el CV a RRHH para carga manual; el original **no se borra**, se
-       etiqueta con `LABEL_ALT_PROCESADO` y se saca de INBOX (sí tenía un
-       adjunto de valor, se conserva por las dudas).
+       OpenAI fallan, o el JSON viene con una forma inesperada) → se etiqueta
+       `RRHH a revisar/no procesado` y se archiva, para carga manual. El
+       mensaje con su adjunto queda intacto en el buzón.
      - CV válido → extrae texto → Claude estructura los datos → matchea
        contra `rag_system.candidato` (por DNI > email > teléfono > nombre
        normalizado) → upsert candidato + `documento_aprobado` → upsert en
@@ -64,6 +63,36 @@ tomar y le reenvíe la respuesta al remitente. Hay dos protecciones:
 
 `GET /labels` muestra, además del listado del buzón, a qué resuelve cada
 `LABEL_*` configurado (`null` = no existe).
+
+### Revisión manual: etiquetas, no mails a RRHH
+
+Lo que el flujo automático no resuelve **no se le reenvía por mail a RRHH**
+(cambiado 2026-09-21: el volumen de reenvíos llenaba `recursoshumanos@`).
+Queda en el propio buzón de `seleccion@`, fuera de INBOX y etiquetado:
+
+| etiqueta | caso |
+|---|---|
+| `RRHH a revisar` | padre — se aplica **siempre**, es la vista con todo junto |
+| `RRHH a revisar/sin CV` | ya se le pidió el formato en ese hilo y volvió a escribir sin adjunto |
+| `RRHH a revisar/no procesado` | tenía CV pero la IA no lo pudo estructurar: carga manual |
+| `RRHH a revisar/interno` | remitente interno que ya recibió el recordatorio |
+
+Tres cosas a tener en cuenta:
+
+- Las etiquetas se configuran por **nombre visible**, no por ID
+  (`LABEL_REVISAR*` en `.env`), y **se crean solas** la primera vez que se
+  aplican. Renombrarlas en `.env` alcanza; no hay que dar de alta nada en
+  Gmail ni buscar ningún `Label_...`.
+- La padre se aplica explícita, no se confía en el anidado implícito de
+  Gmail al crear `Padre/Hijo`: así la vista "todo junto" existe siempre.
+- **Nada se borra.** Antes, los casos sin adjunto iban a la papelera porque
+  el reenvío ya se llevaba el texto del mensaje; sin ese reenvío el mensaje
+  *es* el registro.
+
+El remitente (`From`) de todas las respuestas automáticas pasó a ser
+`GMAIL_USER` (`seleccion@`). Antes era `rrhh@`, así que cuando un postulante
+respondía, la respuesta aterrizaba en RRHH en vez de volver a `seleccion@`,
+donde vicki_mail la puede procesar.
 
 ## Archivo del CV (store local + Drive)
 
@@ -173,16 +202,10 @@ Contenedor `vicki-mail`, puerto host `8089`. `/health` para chequear,
   JSON del workflow n8n original. Si es la misma cuenta de Google siguen
   siendo válidos, pero conviene confirmarlos (Gmail → Configuración →
   Etiquetas; Drive → abrir la carpeta → ID en la URL).
-- **`LABEL_ALT_PROCESADO`**: apareció en el JSON en una rama que no se pudo
-  identificar con certeza — desde 2026-07-20 se reusa para etiquetar CVs con
-  adjunto que la IA no pudo procesar (`nodes.py:error_node`), en vez de
-  borrarlos. Confirmar con `GET /labels` que el ID corresponde al label
-  correcto en el buzón real.
 - **Plantilla "solo se usa para CVs"** (`solo_recepcion_cv` en
   `app/email_templates.py`): el workflow n8n no tenía un nodo con este
-  texto exacto. Desde 2026-07-20 ya no se usa (los mensajes sin CV se
-  reenvían directo a RRHH sin plantilla) — la función queda escrita por si
-  se necesita volver atrás.
+  texto exacto. Está en uso: es lo que recibe el primer mensaje sin CV de
+  cada hilo.
 - **`Send email3`** ("Acabo de actualizar tus datos en la base") existe en
   el JSON original pero no se pudo determinar en qué rama se disparaba
   distinto de `Send email4`. Por ahora el flujo usa `Send email4`

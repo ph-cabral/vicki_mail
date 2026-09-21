@@ -6,7 +6,14 @@ from fastapi import FastAPI
 
 from app import gmail_client
 from app.config import config
-from app.constants import LABEL_ALT_PROCESADO, LABEL_CV_PROCESADO, LABEL_QUEUE
+from app.constants import (
+    LABEL_CV_PROCESADO,
+    LABEL_QUEUE,
+    LABEL_REVISAR,
+    LABEL_REVISAR_INTERNO,
+    LABEL_REVISAR_NO_PROCESADO,
+    LABEL_REVISAR_SIN_CV,
+)
 from app.db import (
     ensure_columnas_archivo,
     ensure_tabla_mail_procesado,
@@ -120,11 +127,18 @@ def labels():
     """Lista todos los labels del buzon con su ID real -- para verificar que
     LABEL_CV_PROCESADO en .env apunta a lo correcto. LABEL_QUEUE queda solo
     de referencia/fallback (list_queue en gmail_client.py); el descubrimiento
-    de mensajes nuevos ya no depende de el, ver list_inbox()."""
+    de mensajes nuevos ya no depende de el, ver list_inbox().
+
+    Las LABEL_REVISAR_* pueden dar None hasta que se derive el primer caso:
+    se crean solas la primera vez que se aplican (crear=True), no hay que
+    darlas de alta a mano."""
     configurados = {
         "LABEL_QUEUE": LABEL_QUEUE,
         "LABEL_CV_PROCESADO": LABEL_CV_PROCESADO,
-        "LABEL_ALT_PROCESADO": LABEL_ALT_PROCESADO,
+        "LABEL_REVISAR": LABEL_REVISAR,
+        "LABEL_REVISAR_SIN_CV": LABEL_REVISAR_SIN_CV,
+        "LABEL_REVISAR_NO_PROCESADO": LABEL_REVISAR_NO_PROCESADO,
+        "LABEL_REVISAR_INTERNO": LABEL_REVISAR_INTERNO,
     }
     return {
         "labels": gmail_client.list_labels(),
